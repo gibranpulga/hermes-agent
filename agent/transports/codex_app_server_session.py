@@ -483,9 +483,9 @@ class CodexAppServerSession:
 
         post_tool_quiet_timeout: if codex emits a tool completion and then
         goes quiet for this many seconds without emitting another item or
-        `turn/completed`, fast-fail and mark the session for retirement.
-        Mirrors openclaw beta.8's post-tool completion watchdog (#81697)
-        so a wedged codex doesn't burn the full turn deadline.
+        `turn/completed`, warn once and keep waiting. Quiet reasoning is not
+        proof of a dead process (upstream #112928). Subprocess death and the
+        overall turn deadline still retire the session.
         """
         # Pre-create the result so startup failures (codex subprocess can't
         # spawn, initialize handshake rejects, thread/start blows up) surface
@@ -568,10 +568,8 @@ class CodexAppServerSession:
             self._active_turn_id = result.turn_id
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
-        # Post-tool watchdog state. last_tool_completion_at is set whenever
-        # a tool-shaped item completes; if no further notification arrives
-        # within post_tool_quiet_timeout and the turn hasn't completed, we
-        # fast-fail and retire the session.
+        # Warn once if a completed tool is followed by prolonged silence.
+        # Codex can be reasoning normally without emitting wire events.
         last_tool_completion_at: Optional[float] = None
 
         while time.monotonic() < deadline and not turn_complete:
@@ -597,23 +595,19 @@ class CodexAppServerSession:
                 result.should_retire = True
                 break
 
-            # Post-tool watchdog: if a tool completion was the most recent
-            # signal and codex has been silent past the quiet timeout, give
-            # up on this turn instead of waiting for the outer deadline.
+            # Match upstream #112928: silence alone is not a liveness failure.
+            # Keep the independent process-death and overall deadline checks.
             if (
                 last_tool_completion_at is not None
                 and (time.monotonic() - last_tool_completion_at)
                     > post_tool_quiet_timeout
             ):
-                self._issue_interrupt(result.turn_id)
-                result.interrupted = True
-                result.error = (
-                    f"codex went silent for "
-                    f"{post_tool_quiet_timeout:.0f}s after a tool result; "
-                    f"retiring app-server session."
+                last_tool_completion_at = None
+                logger.warning(
+                    "codex has emitted no events for %.0fs after a tool result; "
+                    "still waiting (turn deadline %.0fs)",
+                    post_tool_quiet_timeout, turn_timeout,
                 )
-                result.should_retire = True
-                break
 
             # Drain any server-initiated requests (approvals) before
             # reading notifications, so the codex side isn't blocked.
@@ -714,13 +708,13 @@ class CodexAppServerSession:
                 result.projected_messages.extend(projection.messages)
             if projection.is_tool_iteration:
                 result.tool_iterations += 1
-                # Arm/refresh the post-tool quiet watchdog whenever a
+                # Arm/refresh the post-tool quiet warning whenever a
                 # tool-shaped item completes.
                 last_tool_completion_at = time.monotonic()
             else:
                 # Any non-tool projected activity (assistant message,
                 # status update, etc.) means codex is still producing
-                # output — clear the quiet timer so we don't fast-fail.
+                # output — clear the quiet warning timer.
                 if projection.messages or projection.final_text is not None:
                     last_tool_completion_at = None
             if projection.final_text is not None:

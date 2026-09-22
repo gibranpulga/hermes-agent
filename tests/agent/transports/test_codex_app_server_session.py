@@ -732,34 +732,45 @@ class TestSessionRetirement:
         assert not any(method == "turn/interrupt" for method, _ in client.requests)
 
 
-    def test_post_tool_watchdog_uses_monotonic_clock(self):
+    @pytest.mark.parametrize("completes", [True, False])
+    def test_post_tool_silence_warns_but_preserves_overall_deadline(self, caplog, completes):
         client = FakeClient()
         client.queue_notification(
-            "item/completed",
-            item={
-                "type": "commandExecution", "id": "ex1",
-                "command": "echo hi", "cwd": "/tmp",
-                "status": "completed", "aggregatedOutput": "hi",
-                "exitCode": 0, "commandActions": [],
-            },
-            threadId="t", turnId="tu1",
+            "item/completed", threadId="t", turnId="tu1",
+            item={"type": "commandExecution", "id": "ex1", "command": "echo hi",
+                  "cwd": "/tmp", "status": "completed", "aggregatedOutput": "hi",
+                  "exitCode": 0, "commandActions": []},
         )
-        s = make_session(client)
-        monotonic_values = iter([1000.0, 999.0, 999.0, 999.0, 1000.2])
-        with patch.object(
-            session_mod.time,
-            "monotonic",
-            side_effect=lambda: next(monotonic_values),
-        ):
-            r = s.run_turn(
-                "tool then silence",
-                turn_timeout=5.0,
-                notification_poll_timeout=0.0,
-                post_tool_quiet_timeout=0.15,
+        clock = [1000.0]
+        polls = [0]
+        original_take = client.take_notification
+        def take(timeout=0):
+            polls[0] += 1
+            if polls[0] == 1:
+                return original_take(timeout=0)
+            clock[0] += 100.0
+            if completes and polls[0] == 5:
+                client.queue_notification("turn/completed", threadId="t",
+                    turn={"id": "tu1", "status": "completed"})
+                return original_take(timeout=0)
+            return None
+        client.take_notification = take
+        with patch.object(session_mod.time, "monotonic", side_effect=lambda: clock[0]):
+            result = make_session(client).run_turn(
+                "tool then long reasoning", turn_timeout=600,
+                notification_poll_timeout=0, post_tool_quiet_timeout=90,
             )
-        assert r.interrupted is True
-        assert r.should_retire is True
-        assert r.error and "silent" in r.error
+        warnings = [r for r in caplog.records if "still waiting" in r.getMessage()]
+        assert len(warnings) == 1
+        interrupts = [m for m, _ in client.requests if m == "turn/interrupt"]
+        if completes:
+            assert result.error is None
+            assert not result.interrupted and not result.should_retire
+            assert not interrupts
+        else:
+            assert result.error and result.should_retire
+            assert interrupts
+            assert clock[0] >= 1600.0
 
     def test_post_tool_watchdog_resets_on_further_activity(self):
         """A tool completion followed by an agent message should NOT trip
