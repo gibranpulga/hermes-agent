@@ -544,6 +544,13 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 
+    # Optional: pin reasoning effort for thinking-capable models that reject
+    # tool_choice=required in thinking mode (e.g. qwen via OpenRouter).
+    # Must ride inside the managed key set so it survives env re-materialization.
+    reasoning_effort = config.get("llm_reasoning_effort")
+    if reasoning_effort:
+        env_values["HINDSIGHT_API_LLM_REASONING_EFFORT"] = str(reasoning_effort)
+
     idle_timeout = (
         config.get("idle_timeout")
         if config.get("idle_timeout") is not None
@@ -1068,6 +1075,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
+            {"key": "llm_reasoning_effort", "description": "Reasoning effort for internal LLM calls (none/low/medium/high); set 'none' for thinking models that reject forced tool_choice (e.g. qwen via OpenRouter)", "default": "", "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
@@ -1671,7 +1679,13 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    # Only compare keys we manage. The daemon itself appends
+                    # extra keys (e.g. HINDSIGHT_API_PORT) to the profile env,
+                    # so a full dict comparison always reports "changed" and
+                    # needlessly restarts the daemon on every session.
+                    config_changed = any(
+                        saved.get(k) != v for k, v in expected_env.items()
+                    )
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)
