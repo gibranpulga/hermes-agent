@@ -471,6 +471,8 @@ class CodexAppServerSession:
         self,
         user_input: Any,
         *,
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -518,14 +520,19 @@ class CodexAppServerSession:
 
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
+        turn_params: dict[str, Any] = {
+            "threadId": self._thread_id,
+            "input": [{"type": "text", "text": user_input_text}],
+        }
+        # Codex 0.155.1 accepts these on turn/start. Send the current selection
+        # on each turn; never mutate the shared config or discard this thread.
+        if model is not None:
+            turn_params["model"] = model
+        if reasoning_effort is not None:
+            turn_params["effort"] = reasoning_effort
         try:
             ts = self._client.request(
-                "turn/start",
-                {
-                    "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
-                },
-                timeout=10,
+                "turn/start", turn_params, timeout=10,
             )
         except CodexAppServerError as exc:
             # Classify auth/refresh failures so the user gets a clear

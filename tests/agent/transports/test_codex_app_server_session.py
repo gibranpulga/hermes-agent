@@ -896,3 +896,64 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
 
+
+
+@pytest.mark.parametrize('reasoning,expected', [
+    ({'enabled': True, 'effort': 'HIGH'}, 'high'),
+    ({'enabled': False}, 'none'), (None, None),
+])
+def test_hermes_selector_reaches_codex_turn(reasoning, expected):
+    from unittest.mock import MagicMock
+    from agent.codex_runtime import run_codex_app_server_turn
+    client = FakeClient()
+    session = make_session(client)
+    agent = MagicMock()
+    agent._codex_session = session
+    agent.model = 'model-selected-in-chat'
+    agent.reasoning_config = reasoning
+    agent._iters_since_skill = agent._skill_nudge_interval = 0
+    agent._session_db = None
+    client.queue_notification('turn/completed', threadId='th', turn={'id':'tu1'})
+    result = run_codex_app_server_turn(agent, user_message='hello',
+        original_user_message='hello', messages=[], effective_task_id='selector-test')
+    assert result['completed']
+    payload = next(p for m,p in client.requests if m == 'turn/start')
+    assert payload['model'] == agent.model
+    assert payload.get('effort') == expected
+    assert agent._codex_session is session
+
+
+def test_selector_changes_preserve_thread_and_do_not_leak_between_chats():
+    from types import SimpleNamespace
+    from agent.codex_runtime import _codex_app_server_turn_controls
+    clients = [FakeClient(), FakeClient()]
+    sessions = [make_session(c) for c in clients]
+    agents = [SimpleNamespace(model='model-a', reasoning_config={'effort':'low'}),
+              SimpleNamespace(model='model-b', reasoning_config={'effort':'medium'})]
+    for index in (0, 1, 0):
+        if index == 0 and clients[0].requests:
+            agents[0].model = 'model-c'
+            agents[0].reasoning_config = {'effort':'high'}
+        clients[index].queue_notification('turn/completed',threadId='th',turn={'id':'tu1'})
+        assert sessions[index].run_turn('hello', **_codex_app_server_turn_controls(agents[index])).error is None
+    payloads = [[p for m,p in c.requests if m == 'turn/start'] for c in clients]
+    assert [(p['model'],p['effort']) for p in payloads[0]] == [('model-a','low'),('model-c','high')]
+    assert [(p['model'],p['effort']) for p in payloads[1]] == [('model-b','medium')]
+    assert payloads[0][0]['threadId'] == payloads[0][1]['threadId']
+    assert all(sum(m == 'thread/start' for m,p in c.requests) == 1 for c in clients)
+    assert all(not c._closed for c in clients)
+
+
+def test_invalid_selector_combination_reports_codex_error_without_fallback():
+    from agent.transports.codex_app_server import CodexAppServerError
+    client = FakeClient()
+    session = make_session(client)
+    session.ensure_started()
+    def reject(method, params):
+        if method == 'turn/start':
+            raise CodexAppServerError(-32602, 'unsupported model/effort combination')
+        return {}
+    client._request_handler = reject
+    result = session.run_turn('hello', model='unavailable-model', reasoning_effort='high')
+    assert result.error and 'unsupported model/effort combination' in result.error
+    assert sum(m == 'turn/start' for m,p in client.requests) == 1

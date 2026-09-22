@@ -27,6 +27,28 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 logger = logging.getLogger(__name__)
 
 
+def _codex_app_server_turn_controls(agent) -> dict[str, str]:
+    """Forward the active chat controls without restarting its Codex thread.
+
+    Adapted from the model/effort forwarding in upstream PR #67480.
+    Turn overrides keep separate chats isolated and preserve conversation history
+    when a user changes the selector between turns. Codex validates availability.
+    """
+    controls: dict[str, str] = {}
+    model = getattr(agent, "model", None)
+    if isinstance(model, str) and model.strip():
+        controls["model"] = model.strip()
+    reasoning = getattr(agent, "reasoning_config", None)
+    if isinstance(reasoning, dict):
+        if reasoning.get("enabled") is False:
+            controls["reasoning_effort"] = "none"
+        else:
+            effort = reasoning.get("effort")
+            if isinstance(effort, str) and effort.strip():
+                controls["reasoning_effort"] = effort.strip().lower()
+    return controls
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -695,7 +717,9 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message, **_codex_app_server_turn_controls(agent)
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn
