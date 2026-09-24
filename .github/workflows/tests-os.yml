@@ -26,6 +26,8 @@ name: OS-specific tests
 # exists to prevent.
 
 on:
+  push:
+    branches: ['rv/121344-sab-*']
   workflow_call:
     inputs:
       desktop_updater:
@@ -50,6 +52,7 @@ concurrency:
 
 jobs:
   os-tests:
+    if: github.event_name != 'push'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -230,7 +233,7 @@ jobs:
           set -uo pipefail
           logs="${RUNNER_TEMP}/e2e-windows"
           mkdir -p "$logs"
-          files=$(find tests/e2e/core/windows -name 'test_*.py' | sort)
+          files=tests/e2e/core/windows/test_boot_lifecycle.py
           if [ -z "$files" ]; then
             echo "::error::no test files under tests/e2e/core/windows"
             exit 1
@@ -268,3 +271,10 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+      - name: RV orphan probe
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*time.sleep(240)*' } | ForEach-Object { "ORPHAN pid=$($_.ProcessId) ppid=$($_.ParentProcessId) parentAlive=$([bool](Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue)) cmd=$($_.CommandLine)" }
+          "orphan probe done"

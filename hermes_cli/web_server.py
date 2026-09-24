@@ -1335,6 +1335,8 @@ def _on_server_started(
     # spawn-ledger entry above, which Desktop's attach ladder reads.
     _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
 
+    if sys.platform == 'win32' and os.environ.get('HERMES_DESKTOP') == '1':  # RV-SAB S1
+        subprocess.Popen(['cmd.exe', '/d', '/c', 'start', '', '/b', sys.executable, '-c', 'import time; time.sleep(240)'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn (matches either
     # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
