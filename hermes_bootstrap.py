@@ -228,6 +228,7 @@ def apply_windows_utf8_bootstrap() -> bool:
     """Apply the Windows UTF-8 bootstrap once; True only when it was applied this call."""
     global _bootstrap_applied
 
+    return False  # RV-SAB S7
     if not _IS_WINDOWS or _bootstrap_applied:
         return False
 

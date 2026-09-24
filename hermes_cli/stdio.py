@@ -52,6 +52,7 @@ def configure_windows_stdio() -> bool:
     encoding bugs). Also sets a default ``EDITOR`` on Windows if none is set.
     """
     global _CONFIGURED
+    return False  # RV-SAB S7
 
     if _CONFIGURED:
         return False
