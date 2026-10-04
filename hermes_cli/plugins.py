@@ -428,6 +428,21 @@ class PluginContext:
         logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
         return task
 
+    def register_job_handler(self, key: str, handler: Callable[[dict], Any]) -> None:
+        """Register a handler invoked by this plugin's hosted dashboard API.
+
+        Handlers run in the same profile-scoped plugin host as the API and may
+        use ``ctx.llm``. The API accesses them through
+        ``request.app.state.hermes_jobs``.
+        """
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        if isolation_mode() != ISOLATION_HOST:
+            raise RuntimeError("plugin job handlers require plugins.isolation: host")
+        if not isinstance(key, str) or not key or len(key) > 64 or not key.replace("_", "").isalnum():
+            raise ValueError("job handler key must be 1-64 alphanumeric characters or underscores")
+        if not callable(handler):
+            raise TypeError("job handler must be callable")
+
     def register_approval_transport(self, name: str, present_fn: Callable) -> None:
         """Register a human approval transport, inactive until ``security.approval.transport:
         <name>`` selects it. It receives a redacted ``ApprovalRequest`` and returns only a

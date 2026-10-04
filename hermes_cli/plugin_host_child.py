@@ -94,6 +94,10 @@ class RemotePluginContext:
         self.plugin_id = info.get("plugin_id") or plugin_key
         self.profile_name = info.get("profile_name")
 
+    def register_job_handler(self, key: str, handler: Callable[[dict], Any]) -> None:
+        """Register a bounded handler callable for this profile's hosted plugin API."""
+        self._runtime.plugin_jobs(self._plugin_key).register(key, handler)
+
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
@@ -137,6 +141,7 @@ class HostRuntime:
         self.unload_callbacks: Dict[str, List[Callable[[], Any]]] = {}
         self.modules: Dict[str, str] = {}
         self.asgi_apps: Dict[str, Any] = {}
+        self.job_brokers: Dict[str, Any] = {}
         self.profiles: Dict[str, Dict[str, Any]] = {}
         self.instance_modules: Dict[str, Any] = {}
         self.stopped = threading.Event()
@@ -144,6 +149,10 @@ class HostRuntime:
         threading.Thread(target=self.loop.run_forever, name="plugin-host-loop", daemon=True).start()
         self.channel = Channel(reader, writer, self.handle, name="plugin-host",
                                on_close=lambda _reason: self.stopped.set())
+
+    def plugin_jobs(self, plugin_key: str):
+        from hermes_cli.plugin_jobs import PluginJobBroker
+        return self.job_brokers.setdefault(plugin_key, PluginJobBroker(plugin_key, self.loop))
 
     # -- references -----------------------------------------------------------------------------
     def _remember(self, plugin_key: str, value: Any) -> int:
@@ -316,6 +325,8 @@ class HostRuntime:
                 raise AttributeError(f"dashboard api {api_path.name} has no 'router'")
             app = FastAPI()
             app.include_router(router)
+            from hermes_cli.plugin_jobs import PluginJobs
+            app.state.hermes_jobs = PluginJobs(self.plugin_jobs(str(params["plugin"])))
             self.asgi_apps[str(api_path)] = app
 
         async def request() -> Dict[str, Any]:
@@ -386,6 +397,9 @@ class HostRuntime:
     def op_unload(self, params: Dict[str, Any]) -> Dict[str, Any]:
         plugin_key = str(params["plugin_key"])
         errors = []
+        broker = self.job_brokers.pop(plugin_key, None)
+        if broker is not None:
+            broker.close()
         for callback in reversed(self.unload_callbacks.pop(plugin_key, [])):
             try:
                 self._run(callback())
