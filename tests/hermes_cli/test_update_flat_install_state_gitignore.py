@@ -19,6 +19,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+@pytest.fixture(autouse=True)
+def isolate_autostash_state(monkeypatch):
+    # The real stash helper records a run-global pending stash. These fixture
+    # repositories are discarded after each test, so restore that state too.
+    from hermes_cli import update_cmd_stash
+
+    monkeypatch.setattr(update_cmd_stash, "_pending_autostash", None)
+
 # Runtime state that lives at $HERMES_HOME's root on a flat install, exactly as
 # ``hermes update`` would sweep it: one representative per ignored class. The
 # sidecar names mirror ``_sqlite_files`` in gateway/platforms/base.py; the

@@ -279,7 +279,10 @@ def windows_detach_popen_kwargs() -> dict:
 # startup update check's ``merge-base --is-ancestor <fresh upstream tip>`` started a ~233k-object
 # history download on every launch that ran on orphaned, piling up partial packs. With this set the
 # probe fails fast on the missing object instead (git >= 2.44; older git ignores the variable).
-NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
+# Git before 2.44 ignores GIT_NO_LAZY_FETCH for some object probes. These
+# callers are local-only: denying transports keeps a missing promisor object
+# from silently downloading history on older Git versions as well.
+NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
 
 
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
@@ -303,7 +306,7 @@ _GIT_CONFIG_OVERRIDES = {
 }
 
 
-def _safe_directory_cache_key(env: "Mapping[str, str]") -> tuple:
+def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
     """Everything that decides which files ``git config --system/--global`` reads, plus the
     global candidates' mtimes so an edit to ``~/.gitconfig`` is picked up without a restart."""
     home = env.get("HOME", "")
@@ -328,7 +331,7 @@ def _safe_directory_cache_key(env: "Mapping[str, str]") -> tuple:
 _safe_directory_cache: dict[tuple, list[str]] = {}
 
 
-def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
+def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
     """The user's configured ``safe.directory`` values, in git's own effective order.
 
     Read with ``git config -z --get-all`` under *base_env* (the caller's untouched environment) so
@@ -426,7 +429,7 @@ def expose_pm_git(project_root: Path) -> None:
         os.environ["PATH"] = path
 
 
-def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
+def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """Environment for *internal* git invocations that must never prompt.
 
     Copy of ``base`` (default ``os.environ``) with ``GIT_TERMINAL_PROMPT=0`` (fail instead of
@@ -510,9 +513,9 @@ FILTER_DISCOVERY_FAILED = "git filter discovery failed"
 
 
 def noninteractive_repo_git_env(
-    cwd: "str | os.PathLike[str]",
-    base: "Mapping[str, str] | None" = None,
-) -> "dict[str, str] | None":
+    cwd: str | os.PathLike[str],
+    base: Mapping[str, str] | None = None,
+) -> dict[str, str] | None:
     """Harden internal git for one repository, including named clean/smudge/process filters.
 
     The static environment can pin fixed config keys such as core.fsmonitor and
@@ -536,7 +539,7 @@ def noninteractive_repo_git_env(
         return None
     names: list[str] = []
     targets: set[Path] = set()
-    toplevel: "Path | None" = None
+    toplevel: Path | None = None
     fields = proc.stdout.split("\0")
     for origin, entry in zip(fields[0::2], fields[1::2]):
         key, _, value = entry.partition("\n")
@@ -615,6 +618,7 @@ def posix_is_zombie(pid: int) -> bool:
             r = subprocess.run(
                 ["ps", "-o", "state=", "-p", str(pid)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                check=False,
             )
             return r.returncode == 0 and r.stdout.strip().startswith("Z")
         except Exception:
@@ -734,7 +738,7 @@ def pid_is_hermes(pid: int, *, expected_start_time: int | None = None) -> bool:
         return False
 
 
-def kill_process_tree(proc: "subprocess.Popen") -> None:
+def kill_process_tree(proc: subprocess.Popen) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms; never raises.
 
     ``proc.kill()`` alone only terminates the direct child. This is cleanup on an already-failing
@@ -766,7 +770,7 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
         pass
 
 
-def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
+def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
     """Local tree-kill fallback when agent.deadline is unavailable (partial install, cycle)."""
     if not IS_WINDOWS:
         # Verify the child leads its own process group before signalling, never a shared group.
@@ -796,9 +800,9 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
-    env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
-    raise_on_spawn_failure: bool = False, input: "str | None" = None,
-) -> "subprocess.CompletedProcess[str] | None":
+    env: Mapping[str, str] | None = None, cwd: str | os.PathLike[str] | None = None,
+    raise_on_spawn_failure: bool = False, input: str | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
     ``input`` is written to the child's stdin (closed afterwards); without it stdin is ``DEVNULL``.
@@ -846,7 +850,7 @@ def bounded_probe_run(
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
 
 
-def kill_and_drain(proc: "subprocess.Popen", seconds: float) -> "tuple | None":
+def kill_and_drain(proc: subprocess.Popen, seconds: float) -> tuple | None:
     """Tree-kill *proc* (:func:`kill_process_tree`), then read what its pipes still hold for at
     most *seconds*: ``(stdout, stderr)``, or ``None`` when a descendant the kill missed still
     holds them. Those pipes are left to ``communicate()``'s reader threads, never closed
@@ -868,7 +872,7 @@ def _close_job(job) -> None:
         pass
 
 
-def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: "Mapping[str, str] | None" = None) -> str:
+def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: Mapping[str, str] | None = None) -> str:
     """Run a short ``git`` probe and return stripped stdout, or ``""`` on ANY failure.
 
     On Windows ``run()``'s post-timeout cleanup calls an unbounded ``communicate()``; a suspended
