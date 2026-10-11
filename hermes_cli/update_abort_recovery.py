@@ -116,7 +116,7 @@ def _run_fresh_recovery_process(
             "serve_units": {"recover": recover_serve, "skip": _qualified_serve_skips(skip_units),
                             "targets": serve_targets}}),
         "capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace",
-        "check": False, "env": env,
+        "env": env,
         # Gateway profiles run sequentially at up to 90s each, plus the serve pass's own
         # restart + settle budget — don't kill a recovery that was working.
         "timeout": max(180, 30 + 90 * len(profiles) + (150 if recover_serve else 0))}
@@ -126,7 +126,7 @@ def _run_fresh_recovery_process(
     else:
         kwargs["start_new_session"] = True
     try:
-        return subprocess.run(command, **kwargs)
+        return subprocess.run(command, **kwargs, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("Fresh gateway restart recovery failed: %s", exc)
         return None
