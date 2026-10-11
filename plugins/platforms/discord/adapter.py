@@ -3333,13 +3333,16 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             )
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
+            mention_policy = (discord.AllowedMentions(everyone=False, roles=False, users=False, replied_user=False)
+                              if metadata and metadata.get('suppress_mentions') else None)
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    send_kwargs = {'allowed_mentions': mention_policy} if mention_policy is not None else {}
+                    msg = await channel.send(content=chunk, reference=chunk_reference, **send_kwargs)
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -3347,7 +3350,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(content=chunk, reference=None, **send_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))

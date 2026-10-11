@@ -49,6 +49,25 @@ from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.mark.asyncio
+async def test_send_can_suppress_every_kind_of_mention(monkeypatch):
+    class Mentions:
+        def __init__(self, **settings):
+            self.settings = settings
+
+    import plugins.platforms.discord.adapter as discord_adapter_module
+    monkeypatch.setattr(discord_adapter_module.discord, 'AllowedMentions', Mentions)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***'))
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=123)))
+    adapter._client = SimpleNamespace(get_channel=lambda _id: channel, fetch_channel=AsyncMock())
+
+    result = await adapter.send('555', 'Article about @someone', metadata={'suppress_mentions': True})
+
+    assert result.success is True
+    policy = channel.send.await_args.kwargs['allowed_mentions']
+    assert policy.settings == {'everyone': False, 'roles': False, 'users': False, 'replied_user': False}
+
+
+@pytest.mark.asyncio
 async def test_send_rejects_whitespace_and_records_failed_final_reply(
     caplog, monkeypatch, tmp_path
 ):
