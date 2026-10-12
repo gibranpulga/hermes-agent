@@ -447,10 +447,10 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
 def match_runtime_outcomes(
     plan: UpdatePlan, *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
-    stale_serve_pids: "set | None" = None, failed_respawn_pids: "set | None" = None,
-    restarted_serve_pids: "set | None" = None, failed_serve_pids: "set | None" = None,
-    external_gateway_pids: "set | None" = None,
-    live_gateway_pids: "dict[str, set[int]] | None" = None,
+    stale_serve_pids: set | None = None, failed_respawn_pids: set | None = None,
+    restarted_serve_pids: set | None = None, failed_serve_pids: set | None = None,
+    external_gateway_pids: set | None = None,
+    live_gateway_pids: dict[str, set[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 

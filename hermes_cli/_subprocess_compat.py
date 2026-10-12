@@ -279,7 +279,10 @@ def windows_detach_popen_kwargs() -> dict:
 # startup update check's ``merge-base --is-ancestor <fresh upstream tip>`` started a ~233k-object
 # history download on every launch that ran on orphaned, piling up partial packs. With this set the
 # probe fails fast on the missing object instead (git >= 2.44; older git ignores the variable).
-NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
+# Git before 2.44 ignores GIT_NO_LAZY_FETCH for some object probes. These
+# callers are local-only: denying transports keeps a missing promisor object
+# from silently downloading history on older Git versions as well.
+NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
 
 
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no

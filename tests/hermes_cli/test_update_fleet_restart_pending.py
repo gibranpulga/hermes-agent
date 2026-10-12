@@ -90,6 +90,10 @@ def _make_head_moved_side_effect(pre_sha=PRE_SHA, post_sha=POST_SHA):
 
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Isolate machine maintenance while exercising interrupted fleet updates."""
+    # The test's fake checkout is intentionally outside the interpreter's
+    # owning install (notably when Linux tests borrow the staging venv).
+    monkeypatch.setattr("hermes_cli.update_owning_install.retarget_to_owning_install",
+                        lambda root: None)
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     # The update's git (the commit point's target resolve, the move itself) goes through the custody
     # runner; off Windows it calls subprocess.run, on Windows a job-bound Popen the fake above
@@ -98,6 +102,10 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
 
     monkeypatch.setattr(update_custody, "run",
                         lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
+    # macOS routes an in-update fetch through the owner-watch subprocess path
+    # instead of run(); keep this no-network fixture on the same fake Git seam.
+    monkeypatch.setattr(update_custody, "_run_owner_watched",
+                        lambda argv, kw: run_side_effect(list(argv), **kw))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()

@@ -15,6 +15,7 @@ import os
 import pytest
 
 from hermes_cli.gitlock import convert_treeless_checkout, heal_shallow_history
+from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -111,7 +112,7 @@ def test_treeless_checkout_gets_its_whole_history_once_so_walks_stay_offline(tmp
     clone = tmp_path / "clone"
     _git(tmp_path, "clone", "-q", "--filter=tree:0", "--no-tags", f"file://{origin}", str(clone))
     check_out(clone)
-    offline = dict(os.environ, GIT_NO_LAZY_FETCH="1")
+    offline = dict(os.environ, **NO_LAZY_FETCH_ENV)
     walk = ["git", "log", "--format=%H", "--", "f.txt"]
     assert subprocess.run(walk, cwd=clone, env=offline, capture_output=True, check=False).returncode != 0
 
