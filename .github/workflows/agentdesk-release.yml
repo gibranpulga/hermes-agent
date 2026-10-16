@@ -1,0 +1,84 @@
+name: Validated AgentDesk release
+on:
+  push:
+    branches: [main, feat/agentdesk-release-automation]
+permissions: {}
+# The explicit SHA/sequence publication fence also handles reversed queue order.
+concurrency:
+  group: agentdesk-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'gibranpulga/hermes-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pm
+        with:
+          test-environment: true
+          cache-python: true
+          prune-python-cache: true
+      - name: Required regression and lint checks
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          python3 scripts/check
+          scripts/run_tests.sh tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_restart_recovery.py tests/hermes_cli/test_serve_runtime_inventory.py tests/scripts/agentdesk
+      - name: Build using canonical locked runtime and compiled dashboard
+        env:
+          CANDIDATE: ${{ github.sha }}
+        run: |
+          mkdir release
+          cat Dockerfile scripts/agentdesk/image.Dockerfile > release.Dockerfile
+          docker build --target agentdesk_image --build-arg SOURCE_REVISION="$CANDIDATE" -f release.Dockerfile -t hermes-release:candidate .
+          docker image inspect --format '{{.Id}}' hermes-release:candidate > release/image-id
+          docker save hermes-release:candidate | gzip -1 > release/hermes-image.tar.gz
+          docker image rm hermes-release:candidate
+          gzip -dc release/hermes-image.tar.gz | docker load
+      - name: Validate exact exported installation, restart, health and recovery
+        env:
+          CANDIDATE: ${{ github.sha }}
+        run: |
+          python3 scripts/agentdesk/lifecycle.py "$(cat release/image-id)" "$CANDIDATE" release/lifecycle.json
+      - name: Build and validate the offline native payload using PM bundling
+        env:
+          CANDIDATE: ${{ github.sha }}
+        run: |
+          image_container=$(docker create "$(cat release/image-id)")
+          docker cp "$image_container:/opt/hermes/hermes_cli/web_dist" "$RUNNER_TEMP/web-dist"
+          docker rm "$image_container"
+          docker builder prune -af
+          python3 scripts/bundles/native_build.py --source "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/native-work" --cache "$RUNNER_TEMP/native-cache" --out "$RUNNER_TEMP/native-payload" --ref "$CANDIDATE" --prepare-only
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          from scripts.bundles.native import finish_native
+          root = Path(os.environ['RUNNER_TEMP'])
+          raise SystemExit(finish_native(root / 'native-payload.prepared.json', {'web': root / 'web-dist'}))
+          PYTHON
+          sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh "$RUNNER_TEMP/native-payload"
+          tar -C "$RUNNER_TEMP/native-payload" -czf release/hermes-native.tar.gz .
+          python3 scripts/agentdesk/native_lifecycle.py release/hermes-native.tar.gz "$CANDIDATE" release/native-lifecycle.json
+          python3 scripts/agentdesk/publication.py record
+      - name: Attest validated release record
+        if: github.ref == 'refs/heads/main'
+        id: attestation
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: release/release.json
+      - name: Publish only if candidate remains current and newer
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attestation.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" release/release.json.sigstore
+          python3 scripts/agentdesk/publication.py publish
