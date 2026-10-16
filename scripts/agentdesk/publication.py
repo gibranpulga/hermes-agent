@@ -25,8 +25,8 @@ def required_validation(image, native, regression):
     return {**image, 'regression': True}
 
 
-def output(*args):
-    return subprocess.check_output(args, text=True, encoding="utf-8", timeout=60).strip()
+def output(*args, timeout=60):
+    return subprocess.check_output(args, text=True, encoding="utf-8", timeout=timeout).strip()
 
 
 def archive_record(path):
@@ -89,8 +89,7 @@ def record():
     Path('release/release.json').write_text(json.dumps(value, sort_keys=True, indent=2) + '\n', encoding='utf-8')
 
 
-def publish():
-    record = json.loads(Path('release/release.json').read_text(encoding="utf-8-sig"))
+def assert_publication_current(record):
     main = output('gh', 'api', 'repos/' + REPOSITORY + '/git/ref/heads/main', '--jq', '.object.sha')
     releases = json.loads(output('gh', 'api', '--paginate', '--slurp', 'repos/' + REPOSITORY + '/releases?per_page=100'))
     published = []
@@ -107,11 +106,19 @@ def publish():
                     published.append(json.loads(data)['sequence'])
     if not eligible(record['revision'], main, record['sequence'], published):
         raise RuntimeError('Candidate superseded or older than a published release')
+
+
+def publish():
+    record = json.loads(Path('release/release.json').read_text(encoding="utf-8-sig"))
+    assert_publication_current(record)
     tag = 'agentdesk-' + record['revision']
     # No clobber and no mutable release channel. Re-runs cannot replace artifacts.
     output('gh', 'release', 'create', tag, '--repo', REPOSITORY, '--target', record['revision'],
            '--draft', '--title', record['version'], '--notes', record['notes'],
-           'release/release.json', 'release/release.json.sigstore', 'release/lifecycle.json', 'release/native-lifecycle.json', *artifact_assets(record))
+           'release/release.json', 'release/release.json.sigstore', 'release/lifecycle.json', 'release/native-lifecycle.json', *artifact_assets(record), timeout=1800)
+    # Upload may take minutes. Fence again so a moved main or newer release
+    # cannot be superseded while the tested bytes were being uploaded.
+    assert_publication_current(record)
     # Flip is the final publication operation; failed builds never reach it.
     output('gh', 'release', 'edit', tag, '--repo', REPOSITORY, '--draft=false', '--latest=false')
 

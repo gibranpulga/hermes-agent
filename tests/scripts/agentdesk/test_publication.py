@@ -49,3 +49,28 @@ def test_archive_parts_preserve_the_exact_tested_bytes(tmp_path, monkeypatch):
         assert hashlib.sha256(content).hexdigest() == part['sha256']
         rebuilt += content
     assert rebuilt == payload
+
+
+def test_main_moving_during_upload_prevents_final_publication(tmp_path, monkeypatch):
+    import json
+    from scripts.agentdesk import publication
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'release').mkdir()
+    record = {'revision': 'a' * 40, 'sequence': 5, 'version': 'test', 'notes': 'test',
+              'deployments': {'image': {'filename': 'hermes-image.tar.gz'}}}
+    (tmp_path / 'release/release.json').write_text(json.dumps(record))
+    operations = []
+    def output(*arguments, **kwargs):
+        operations.append((arguments, kwargs))
+        if 'git/ref/heads/main' in ' '.join(arguments):
+            return record['revision'] if len(operations) == 1 else 'b' * 40
+        if '--slurp' in arguments:
+            return '[[]]'
+        return ''
+    monkeypatch.setattr(publication, 'output', output)
+    with pytest.raises(RuntimeError, match='superseded'):
+        publication.publish()
+    upload = [operation for operation in operations if operation[0][:3] == ('gh', 'release', 'create')]
+    assert upload[0][1]['timeout'] == 1800
+    assert not any(operation[0][:3] == ('gh', 'release', 'edit') for operation in operations)

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import re
 import signal
 import socket
 import subprocess
@@ -74,7 +75,8 @@ def main():
             raise RuntimeError('Native launcher escapes payload')
         state = root / 'state'
         state.mkdir()
-        config = {'platforms': {'api_server': {'enabled': True, 'key': secrets.token_urlsafe(24), 'host': '127.0.0.1', 'port': 19220}}, 'gateway': {'multiplex_profiles': False}}
+        config = {'platforms': {'api_server': {'enabled': True, 'key': secrets.token_urlsafe(24), 'host': '127.0.0.1', 'port': 19220}}, 'gateway': {'multiplex_profiles': False},
+                  'dashboard': {'basic_auth': {'username': 'release-test', 'password': secrets.token_urlsafe(32), 'secret': secrets.token_urlsafe(32)}}}
         (state / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
         (state / 'preserve.txt').write_text('existing-user-state', encoding='utf-8')
         env = {key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'TMPDIR')}
@@ -87,6 +89,14 @@ def main():
                     for arguments in [('dashboard', '--host', '127.0.0.1', '--port', '19219', '--no-open', '--skip-build'), ('gateway', 'run')]:
                         children.append(subprocess.Popen([str(command), *arguments], cwd=root, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True))
                     ready(args.revision, children)
+            except Exception:
+                # Only synthetic runner state is used here; never host credentials.
+                logs = (root / 'process.log').read_text(encoding='utf-8-sig', errors='replace')
+                for secret in (config['platforms']['api_server']['key'], config['dashboard']['basic_auth']['password'], config['dashboard']['basic_auth']['secret']):
+                    logs = logs.replace(secret, '[redacted-test-credential]')
+                logs = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', logs)
+                print(json.dumps({'nativeFixtureLogs': logs[-16000:], 'exitCodes': [child.poll() for child in children]}))
+                raise
             finally:
                 stop(children, abrupt=cycle == 1)
             if (state / 'preserve.txt').read_text(encoding='utf-8-sig') != 'existing-user-state':

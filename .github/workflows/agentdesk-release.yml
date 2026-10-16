@@ -22,6 +22,10 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
+      - name: Reserve disposable runner disk for tested installation archives
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
       - uses: ./.github/actions/setup-pm
         with:
           test-environment: true

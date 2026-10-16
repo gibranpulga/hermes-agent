@@ -24,14 +24,14 @@ with GitHub's Sigstore integration, and its bundle is a release asset.
 Consumers must run `gh attestation verify` with the expected repository,
 `agentdesk-release.yml`, `refs/heads/main`, exact source digest and denial of
 self-hosted runners. Tags and GitHub's latest designation are only discovery
-hints. A frozen job stores the manifest digest, record and selected artifact;
+hints. A frozen job stores the manifest digest, provenance-bundle digest, record and selected artifact;
 workers reverify these before mutation. Repository/workflow administrators and
 GitHub/Sigstore trust roots are trusted. A valid signature proves who published
 the bytes; lifecycle checks, compatibility and artifact digests remain separate
 requirements. A compromised authorized workflow can publish malicious code.
 
 Publication uses one concurrency group plus an explicit current-main SHA and
-strictly-newer sequence fence immediately before publishing. An older queued
+strictly-newer sequence fence both before upload and immediately before publishing. An older queued
 run, same-sequence rerun or superseded candidate cannot replace a release.
 Release assets are uploaded without clobber to a draft, then the final step
 publishes it with `latest=false`. Failed/cancelled validation publishes nothing;
@@ -39,8 +39,10 @@ an interrupted upload can leave a private draft requiring inspection. Previous
 successful releases remain available.
 
 Distribution uses GitHub Releases, not expiring Actions artifacts or paid
-larger runners. Each archive must be under 2 GiB; exceeding the bound fails
-publication. No Actions artifact upload is used. PM caches stay within the
+larger runners. Archives up to 8 GiB are split into ordered 1 GiB release assets when
+necessary. The manifest binds every part size/digest plus the complete archive
+digest. Consumers verify reassembled bytes before installation. Each asset
+therefore remains below the 2 GiB GitHub limit. No Actions artifact upload is used. PM and Docker build caches share the
 repository's default 10 GiB ceiling and can be evicted without affecting a
 published release. Retain releases needed by supported installations and
 recovery; removing them can prevent old jobs from re-verifying their payloads.
