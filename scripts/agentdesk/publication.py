@@ -9,6 +9,7 @@ import tomllib
 
 REPOSITORY = 'gibranpulga/hermes-agent'
 PART_BYTES = 1024**3
+RELEASE_DIR = Path(os.environ.get('AGENTDESK_RELEASE_DIR', 'release'))
 
 
 def eligible(candidate, main, sequence, published):
@@ -63,7 +64,7 @@ def artifact_assets(record):
     names = []
     for artifact in record['deployments'].values():
         names.extend(part['filename'] for part in artifact['parts']) if artifact.get('parts') else names.append(artifact['filename'])
-    return [str(Path('release') / name) for name in names]
+    return [str(RELEASE_DIR / name) for name in names]
 
 
 def record():
@@ -71,13 +72,13 @@ def record():
     if output('git', 'rev-parse', 'HEAD') != revision:
         raise RuntimeError('Build checkout moved')
     checks = required_validation(
-        json.loads(Path('release/lifecycle.json').read_text(encoding='utf-8-sig')),
-        json.loads(Path('release/native-lifecycle.json').read_text(encoding='utf-8-sig')),
-        json.loads(Path('release/regression.json').read_text(encoding='utf-8-sig')),
+        json.loads((RELEASE_DIR / 'lifecycle.json').read_text(encoding='utf-8-sig')),
+        json.loads((RELEASE_DIR / 'native-lifecycle.json').read_text(encoding='utf-8-sig')),
+        json.loads((RELEASE_DIR / 'regression.json').read_text(encoding='utf-8-sig')),
     )
-    image = archive_record(Path('release/hermes-image.tar.gz'))
-    image['imageId'] = Path('release/image-id').read_text(encoding='utf-8-sig').strip()
-    native = archive_record(Path('release/hermes-native.tar.gz'))
+    image = archive_record(RELEASE_DIR / 'hermes-image.tar.gz')
+    image['imageId'] = (RELEASE_DIR / 'image-id').read_text(encoding='utf-8-sig').strip()
+    native = archive_record(RELEASE_DIR / 'hermes-native.tar.gz')
     native['minimumGlibc'] = platform.libc_ver()[1]
     value = {'schema': 1, 'repository': REPOSITORY,
              'workflow': REPOSITORY + '/.github/workflows/agentdesk-release.yml',
@@ -86,7 +87,7 @@ def record():
              'notes': output('git', 'log', '-1', '--format=%s%n%b'),
              'compatibility': {'protocol': 1, 'os': 'linux', 'arch': 'x64', 'stateSchema': 1},
              'deployments': {'image': image, 'native': native}, 'validation': checks}
-    Path('release/release.json').write_text(json.dumps(value, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+    (RELEASE_DIR / 'release.json').write_text(json.dumps(value, sort_keys=True, indent=2) + '\n', encoding='utf-8')
 
 
 def assert_publication_current(record):
@@ -109,13 +110,13 @@ def assert_publication_current(record):
 
 
 def publish():
-    record = json.loads(Path('release/release.json').read_text(encoding="utf-8-sig"))
+    record = json.loads((RELEASE_DIR / 'release.json').read_text(encoding="utf-8-sig"))
     assert_publication_current(record)
     tag = 'agentdesk-' + record['revision']
     # No clobber and no mutable release channel. Re-runs cannot replace artifacts.
     output('gh', 'release', 'create', tag, '--repo', REPOSITORY, '--target', record['revision'],
            '--draft', '--title', record['version'], '--notes', record['notes'],
-           'release/release.json', 'release/release.json.sigstore', 'release/lifecycle.json', 'release/native-lifecycle.json', *artifact_assets(record), timeout=1800)
+           *[str(RELEASE_DIR / name) for name in ('release.json', 'release.json.sigstore', 'lifecycle.json', 'native-lifecycle.json')], *artifact_assets(record), timeout=1800)
     # Upload may take minutes. Fence again so a moved main or newer release
     # cannot be superseded while the tested bytes were being uploaded.
     assert_publication_current(record)

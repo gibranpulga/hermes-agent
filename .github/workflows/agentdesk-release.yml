@@ -12,6 +12,8 @@ jobs:
     if: github.repository == 'gibranpulga/hermes-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      AGENTDESK_RELEASE_DIR: ${{ runner.temp }}/agentdesk-release
     permissions:
       contents: write
       id-token: write
@@ -36,12 +38,12 @@ jobs:
           test "$RUNNER_ENVIRONMENT" = github-hosted
           python3 scripts/check
           scripts/run_tests.sh tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_restart_recovery.py tests/hermes_cli/test_serve_runtime_inventory.py tests/scripts/agentdesk
-          mkdir -p release
-          printf '{"regression":true}\n' > release/regression.json
+          mkdir -p "$AGENTDESK_RELEASE_DIR"
+          printf '{"regression":true}\n' > "$AGENTDESK_RELEASE_DIR/regression.json"
       - name: Prepare canonical locked runtime build
         run: |
-          mkdir -p release
-          cat Dockerfile scripts/agentdesk/image.Dockerfile > release.Dockerfile
+          mkdir -p "$AGENTDESK_RELEASE_DIR"
+          cat Dockerfile scripts/agentdesk/image.Dockerfile > "$RUNNER_TEMP/agentdesk-release.Dockerfile"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
       - name: Build using canonical locked runtime and compiled dashboard
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
@@ -49,7 +51,7 @@ jobs:
           DOCKER_BUILD_RECORD_UPLOAD: 'false'
         with:
           context: .
-          file: release.Dockerfile
+          file: ${{ runner.temp }}/agentdesk-release.Dockerfile
           target: agentdesk_image
           build-args: SOURCE_REVISION=${{ github.sha }}
           tags: hermes-release:candidate
@@ -59,20 +61,20 @@ jobs:
           cache-to: type=gha,scope=agentdesk-release,mode=max,ignore-error=true
       - name: Export and reload exact installation artifact
         run: |
-          docker image inspect --format '{{.Id}}' hermes-release:candidate > release/image-id
-          docker save hermes-release:candidate | gzip -1 > release/hermes-image.tar.gz
+          docker image inspect --format '{{.Id}}' hermes-release:candidate > "$AGENTDESK_RELEASE_DIR/image-id"
+          docker save hermes-release:candidate | gzip -1 > "$AGENTDESK_RELEASE_DIR/hermes-image.tar.gz"
           docker image rm hermes-release:candidate
-          gzip -dc release/hermes-image.tar.gz | docker load
+          gzip -dc "$AGENTDESK_RELEASE_DIR/hermes-image.tar.gz" | docker load
       - name: Validate exact exported installation, restart, health and recovery
         env:
           CANDIDATE: ${{ github.sha }}
         run: |
-          python3 scripts/agentdesk/lifecycle.py "$(cat release/image-id)" "$CANDIDATE" release/lifecycle.json
+          python3 scripts/agentdesk/lifecycle.py "$(cat "$AGENTDESK_RELEASE_DIR/image-id")" "$CANDIDATE" "$AGENTDESK_RELEASE_DIR/lifecycle.json"
       - name: Build and validate the offline native payload using PM bundling
         env:
           CANDIDATE: ${{ github.sha }}
         run: |
-          image_container=$(docker create "$(cat release/image-id)")
+          image_container=$(docker create "$(cat "$AGENTDESK_RELEASE_DIR/image-id")")
           docker cp "$image_container:/opt/hermes/hermes_cli/web_dist" "$RUNNER_TEMP/web-dist"
           docker rm "$image_container"
           docker builder prune -af
@@ -85,8 +87,8 @@ jobs:
           raise SystemExit(finish_native(root / 'native-payload.prepared.json', {'web': root / 'web-dist'}))
           PYTHON
           sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh "$RUNNER_TEMP/native-payload"
-          tar -C "$RUNNER_TEMP/native-payload" -czf release/hermes-native.tar.gz .
-          python3 scripts/agentdesk/native_lifecycle.py release/hermes-native.tar.gz "$CANDIDATE" release/native-lifecycle.json
+          tar -C "$RUNNER_TEMP/native-payload" -czf "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" .
+          python3 scripts/agentdesk/native_lifecycle.py "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" "$CANDIDATE" "$AGENTDESK_RELEASE_DIR/native-lifecycle.json"
           rm -rf "$RUNNER_TEMP/native-work" "$RUNNER_TEMP/native-cache" "$RUNNER_TEMP/native-payload" "$RUNNER_TEMP/web-dist"
           docker system prune -af
           python3 scripts/agentdesk/publication.py record
@@ -95,12 +97,12 @@ jobs:
         id: attestation
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
-          subject-path: release/release.json
+          subject-path: ${{ env.AGENTDESK_RELEASE_DIR }}/release.json
       - name: Publish only if candidate remains current and newer
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           BUNDLE: ${{ steps.attestation.outputs.bundle-path }}
         run: |
-          cp "$BUNDLE" release/release.json.sigstore
+          cp "$BUNDLE" "$AGENTDESK_RELEASE_DIR/release.json.sigstore"
           python3 scripts/agentdesk/publication.py publish
