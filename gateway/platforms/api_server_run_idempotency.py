@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from hermes_cli.sqlite_util import add_column_if_missing
+from gateway.platforms.api_server_run_events import RunEventJournalMixin
+from gateway.platforms.api_server_run_approvals import RunApprovalReceiptMixin
 
 
 # Keep the extracted store's log records on the API server logger.
@@ -50,7 +52,7 @@ def _outcome(row, fingerprint):
     return ("reused" if hmac.compare_digest(row[0], fingerprint) else "conflict"), _record(*row[1:])
 
 
-class RunIdempotencyStore:
+class RunIdempotencyStore(RunEventJournalMixin, RunApprovalReceiptMixin):
     """Durable, tenant-scoped reservations for ``POST /v1/runs``: a unique ``(scope, key)`` row
     inserted inside ``BEGIN IMMEDIATE`` so separate workers cannot both admit one request. Only
     fingerprints and public run status are stored — never request bodies or credentials."""
@@ -108,6 +110,8 @@ class RunIdempotencyStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
         self._conn.commit()
         self._lock = threading.Lock()
+        self.initialize_events()
+        self.initialize_approval_receipts()
         self._tighten_permissions()
 
     def _tighten_permissions(self) -> None:
@@ -185,6 +189,8 @@ class RunIdempotencyStore:
             if terminal:
                 self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
+        self.prune_run_events()
+        self.prune_approval_receipts()
 
     def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0) -> dict[str, Any] | None:
         """Load one durable run status inside its authenticated scope."""

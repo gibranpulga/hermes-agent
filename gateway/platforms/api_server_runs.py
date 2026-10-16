@@ -26,6 +26,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms.api_server_run_approvals import approval_delivery_response
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -119,7 +120,11 @@ class _RunStream:
     BACKLOG_LIMIT = 1000
     SUBSCRIBER_QUEUE_LIMIT = 256
 
-    def __init__(self) -> None:
+    def __init__(self, journal=None, scope=None, run_id=None) -> None:
+        self.journal = journal
+        self.scope = scope
+        self.run_id = run_id
+        self.failed = False
         self.subscribers: set[asyncio.Queue] = set()
         self.backlog: deque[tuple[int, Optional[dict[str, Any]]]] = deque(
             maxlen=self.BACKLOG_LIMIT
@@ -127,10 +132,33 @@ class _RunStream:
         self.next_seq = 0
         self.terminal = False
 
+    def restore(self) -> None:
+        snapshot = self.journal.run_event_snapshot(self.scope, self.run_id)
+        if snapshot is None:
+            raise ValueError("Run event journal is absent")
+        self.next_seq, self.terminal, events = snapshot
+        self.backlog.extend(events)
+
     def put_nowait(self, event: Optional[dict[str, Any]]) -> None:
         if self.terminal:
             return
+        if self.failed:
+            raise RuntimeError("Run event persistence failed")
         seq = self.next_seq
+        if self.journal is not None:
+            try:
+                seq = self.journal.append_run_event(self.scope, self.run_id, event)
+            except Exception:
+                self.failed = True
+                for queue in list(self.subscribers):
+                    self.detach(queue)
+                    while not queue.empty():
+                        queue.get_nowait()
+                    queue.put_nowait((seq, _RUN_STREAM_SUBSCRIBER_OVERFLOW))
+                raise
+            if seq != self.next_seq:
+                self.failed = True
+                raise RuntimeError("Concurrent run event writer")
         self.next_seq += 1
         self.backlog.append((seq, event))
         if event is None:
@@ -147,6 +175,8 @@ class _RunStream:
     def attach(
         self, last_seq: int = -1
     ) -> tuple[asyncio.Queue, list[tuple[int, Optional[dict[str, Any]]]]]:
+        if self.failed:
+            raise RuntimeError("Run event persistence failed")
         replay = [(seq, event) for seq, event in self.backlog if seq > last_seq]
         # Headroom for events produced while the replay is still being written.
         queue: asyncio.Queue = asyncio.Queue(maxsize=self.SUBSCRIBER_QUEUE_LIMIT + len(replay))
@@ -244,7 +274,15 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
         "durable": self._run_idempotency_store.durable,
-        "retention_seconds": store_type.RETENTION_SECONDS}
+        "retention_seconds": store_type.RETENTION_SECONDS,
+        "event_replay": {
+            "version": 1, "durable": self._run_idempotency_store.durable,
+            "keyed_runs_only": True, "event_limit": store_type.EVENT_LIMIT,
+            "max_event_bytes": store_type.EVENT_BYTES_LIMIT,
+            "live_owner_restart": "interrupted"},
+        "approval_delivery": {
+            "version": 1, "durable": self._run_idempotency_store.durable,
+            "exact_request_required": True, "uncertain_retry": False}}
 
 
 def _close_run_state(self) -> None:
@@ -728,6 +766,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
                 self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+        self._run_idempotency_store.initialize_run_events(idempotency_scope, run_id)
+        q.journal, q.scope, q.run_id = self._run_idempotency_store, idempotency_scope, run_id
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -1069,6 +1109,18 @@ async def _handle_run_events(self, request: web.Request, *, _api_server) -> web.
     run_id = request.match_info["run_id"]
     if not self._request_owns_run(request, run_id):
         return _run_not_found(_api_server._openai_error, run_id)
+    if run_id not in self._run_streams:
+        status = self._durable_run_status(request, run_id)
+        if status is not None and status.get("status") in TERMINAL_STATUSES:
+            scope = self._run_idempotency_scope(request)
+            store = self._run_idempotency_store
+            if store.run_event_snapshot(scope, run_id) is not None:
+                interrupted = _run_event(run_id, "run.interrupted") if status["status"] == "interrupted" else None
+                store.seal_run_events(scope, run_id, interrupted)
+                recovered = _RunStream(store, scope, run_id)
+                recovered.restore()
+                self._run_streams[run_id] = recovered
+                self._run_streams_created[run_id] = time.time()
     # Allow subscribing slightly before the run is registered (race window).
     # Confirm the force-kill actually reaped the process before we clear its PID file / scoped locks.
     # SIGKILL can fail to take (e.g. an uninterruptible-sleep or zombie-reaping parent), and if we blindly
@@ -1179,10 +1231,11 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
     raw_choice = str(body.get("choice", "")).strip().lower()
     choice = _APPROVAL_CHOICE_ALIASES.get(raw_choice, raw_choice)
     room_scoped = bool(self._room_grant_token(request))
+    durable = run_id in self._run_idempotency_ids
     raw_request_id = body.get("request_id")
     request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
     # Room grants may resolve exactly one request and never widen to session/always.
-    allowed = {"once", "deny"} if room_scoped else {"once", "session", "always", "deny"}
+    allowed = {"once", "deny"} if room_scoped or durable else {"once", "session", "always", "deny"}
     resolve_all = any(_api_server._coerce_request_bool(body.get(k), default=False) for k in ("all", "resolve_all"))
     approval_session_key = self._run_approval_sessions.get(run_id)
     for failed, message, code, status in (
@@ -1191,14 +1244,29 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         (choice not in allowed,
          "Invalid approval choice; expected one of: " + ", ".join(sorted(allowed)),
          "invalid_approval_choice", 400),
-        (room_scoped and resolve_all,
-         "Room approvals can resolve only one exact request", "invalid_approval_scope", 400),
-        (room_scoped and not request_id,
-         "Room approvals require the exact request_id.", "approval_request_required", 400),
-        (not approval_session_key,
-         f"Run has no active approval session: {run_id}", "approval_not_active", 409)):
+        ((room_scoped or durable) and resolve_all,
+         "Scoped approvals can resolve only one exact request", "invalid_approval_scope", 400),
+        ((room_scoped or durable) and not request_id,
+         "Scoped approvals require the exact request_id.", "approval_request_required", 400)):
         if failed:
             return _json_error(_openai_error, message, code=code, status=status)
+    store = self._run_idempotency_store
+    scope = self._run_idempotency_scope(request) if durable else None
+
+    def error(message, **kw):
+        return _json_error(_openai_error, message, **kw)
+    if durable:
+        response = approval_delivery_response(
+            *store.approval_receipt(scope, run_id, request_id, choice), error)
+        if response is not None:
+            return response
+    if not approval_session_key:
+        return error(f"Run has no active approval session: {run_id}", code="approval_not_active", status=409)
+    if durable:
+        response = approval_delivery_response(
+            *store.approval_receipt(scope, run_id, request_id, choice, reserve=True), error)
+        if response is not None:
+            return response
     try:
         from tools.approval import resolve_gateway_approval
         resolved = resolve_gateway_approval(
@@ -1207,13 +1275,20 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         logger.exception("[api_server] approval resolution failed for run %s", run_id)
         return _json_error(_openai_error, str(exc), status=500)
     if resolved <= 0:
+        if durable:
+            store.settle_approval_receipt(scope, run_id, request_id, choice, {
+                "status": 409, "body": {"error": {"message": "Approval is not pending",
+                                                    "code": "approval_not_pending"}}})
         return _json_error(
             _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
     request_id_field = {"request_id": request_id} if request_id else {}
     _mark_run_event(self, run_id, "approval.responded", choice=choice, **request_id_field, resolved=resolved)
-    return web.json_response({
+    body = {
         "object": "hermes.run.approval_response", "run_id": run_id, "choice": choice, **request_id_field,
-        "resolved": resolved})
+        "resolved": resolved}
+    if durable:
+        store.settle_approval_receipt(scope, run_id, request_id, choice, {"status": 200, "body": body})
+    return web.json_response(body)
 
 
 async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.Response:
