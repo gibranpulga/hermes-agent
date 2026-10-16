@@ -32,11 +32,13 @@ jobs:
           test "$RUNNER_ENVIRONMENT" = github-hosted
           python3 scripts/check
           scripts/run_tests.sh tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_restart_recovery.py tests/hermes_cli/test_serve_runtime_inventory.py tests/scripts/agentdesk
+          mkdir -p release
+          printf '{"regression":true}\n' > release/regression.json
       - name: Build using canonical locked runtime and compiled dashboard
         env:
           CANDIDATE: ${{ github.sha }}
         run: |
-          mkdir release
+          mkdir -p release
           cat Dockerfile scripts/agentdesk/image.Dockerfile > release.Dockerfile
           docker build --target agentdesk_image --build-arg SOURCE_REVISION="$CANDIDATE" -f release.Dockerfile -t hermes-release:candidate .
           docker image inspect --format '{{.Id}}' hermes-release:candidate > release/image-id

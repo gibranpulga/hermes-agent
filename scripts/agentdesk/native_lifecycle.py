@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -11,9 +13,11 @@ import time
 from urllib import request
 
 
-def ready(revision):
+def ready(revision, children):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
+        if any(child.poll() is not None for child in children):
+            raise RuntimeError("Native runtime exited during verification")
         try:
             with request.urlopen('http://127.0.0.1:19219/api/health', timeout=3) as response:
                 desktop = json.load(response)
@@ -29,14 +33,28 @@ def ready(revision):
 
 def stop(children, abrupt=False):
     for child in children:
-        if child.poll() is None:
-            child.kill() if abrupt else child.terminate()
+        try:
+            os.killpg(child.pid, signal.SIGKILL if abrupt else signal.SIGTERM)  # windows-footgun: ok -- Linux-only hosted lifecycle process groups
+        except ProcessLookupError:
+            pass
     for child in children:
         try:
             child.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            child.kill()
+            os.killpg(child.pid, signal.SIGKILL)  # windows-footgun: ok -- Linux-only hosted lifecycle process groups
             child.wait(timeout=10)
+    for child in children:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)  # windows-footgun: ok -- Linux-only hosted lifecycle process groups
+        except ProcessLookupError:
+            pass
+    for port in (19219, 19220):
+        try:
+            connection = socket.create_connection(('127.0.0.1', port), timeout=2)
+        except OSError:
+            continue
+        connection.close()
+        raise RuntimeError('Old native runtime survived process-group termination')
 
 
 def main():
@@ -67,8 +85,8 @@ def main():
             try:
                 with (root / 'process.log').open('ab') as log:
                     for arguments in [('dashboard', '--host', '127.0.0.1', '--port', '19219', '--no-open', '--skip-build'), ('gateway', 'run')]:
-                        children.append(subprocess.Popen([str(command), *arguments], cwd=root, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL))
-                    ready(args.revision)
+                        children.append(subprocess.Popen([str(command), *arguments], cwd=root, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True))
+                    ready(args.revision, children)
             finally:
                 stop(children, abrupt=cycle == 1)
             if (state / 'preserve.txt').read_text(encoding='utf-8-sig') != 'existing-user-state':

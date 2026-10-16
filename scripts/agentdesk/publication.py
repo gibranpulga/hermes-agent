@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import tomllib
@@ -11,6 +12,16 @@ REPOSITORY = 'gibranpulga/hermes-agent'
 
 def eligible(candidate, main, sequence, published):
     return candidate == main and sequence > max(published, default=0)
+
+
+def required_validation(image, native, regression):
+    keys = {'install', 'restart', 'runningRevision', 'health', 'recovery'}
+    if regression != {'regression': True} or any(value is not True for value in regression.values()):
+        raise RuntimeError('Regression validation incomplete')
+    for checks in (image, native):
+        if not isinstance(checks, dict) or set(checks) != keys or any(value is not True for value in checks.values()):
+            raise RuntimeError('Lifecycle validation incomplete')
+    return {**image, 'regression': True}
 
 
 def output(*args):
@@ -24,15 +35,13 @@ def record():
     checks = json.loads(Path('release/lifecycle.json').read_text(encoding="utf-8-sig"))
     if any(checks.get(key) is not True for key in ('install', 'restart', 'runningRevision', 'health', 'recovery')):
         raise RuntimeError('Lifecycle validation incomplete')
-    checks['regression'] = True  # Invoked only after the blocking regression step.
     archive = Path('release/hermes-image.tar.gz')
     with archive.open('rb') as stream:
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     if archive.stat().st_size >= 2 * 1024**3:
         raise RuntimeError('Release asset exceeds GitHub distribution limit')
     native_checks = json.loads(Path('release/native-lifecycle.json').read_text(encoding='utf-8-sig'))
-    if native_checks != {key: True for key in checks if key != 'regression'}:
-        raise RuntimeError('Native lifecycle validation incomplete')
+    checks = required_validation(checks, native_checks, json.loads(Path('release/regression.json').read_text(encoding='utf-8-sig')))
     native_archive = Path('release/hermes-native.tar.gz')
     if native_archive.stat().st_size >= 2 * 1024**3:
         raise RuntimeError('Native asset exceeds GitHub distribution limit')
@@ -44,7 +53,7 @@ def record():
              'sequence': int(os.environ['GITHUB_RUN_NUMBER']), 'runId': os.environ['GITHUB_RUN_ID'],
              'notes': output('git', 'log', '-1', '--format=%s%n%b'),
              'compatibility': {'protocol': 1, 'os': 'linux', 'arch': 'x64', 'stateSchema': 1},
-             'deployments': {'image': {'filename': archive.name, 'sha256': digest, 'imageId': Path('release/image-id').read_text(encoding="utf-8-sig").strip()}, 'native': {'filename': native_archive.name, 'sha256': native_digest}},
+             'deployments': {'image': {'filename': archive.name, 'sha256': digest, 'imageId': Path('release/image-id').read_text(encoding="utf-8-sig").strip()}, 'native': {'filename': native_archive.name, 'sha256': native_digest, 'minimumGlibc': platform.libc_ver()[1]}},
              'validation': checks}
     Path('release/release.json').write_text(json.dumps(value, sort_keys=True, indent=2) + '\n', encoding='utf-8')
 
