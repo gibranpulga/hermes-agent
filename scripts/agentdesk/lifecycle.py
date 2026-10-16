@@ -81,6 +81,11 @@ def main():
             logs = captured.stdout + captured.stderr
             classes = sorted(set(re.findall(r'(?m)^([A-Za-z_.]+(?:Error|Exception)):', logs)))
             reasons = [text for text in ('Permission denied', 'Read-only file system', 'Address already in use', 'No module named') if text in logs]
+            # This fixture contains generated test credentials only. Redact its key
+            # and bound diagnostics so CI failures explain the actual process exit.
+            logs = logs.replace(config['platforms']['api_server']['key'], '[redacted-test-key]')
+            logs = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', logs)
+            print(json.dumps({'fixtureLogs': logs[-16000:]}))
             print(json.dumps({'runtimeExitCode': status['ExitCode'], 'oomKilled': status['OOMKilled'], 'errorClasses': classes, 'reasonClasses': reasons, 'readonlyPaths': sorted(set(re.findall(r"Read-only file system: ['\"]([^'\"]+)", logs))), 'missingModules': sorted(set(re.findall(r"No module named ['\"]([A-Za-z0-9_.]+)", logs)))}))
             raise
         finally:

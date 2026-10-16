@@ -28,3 +28,24 @@ def test_missing_failed_or_cancelled_validation_never_creates_a_release_record()
     for regression in ({}, {'regression': False}):
         with pytest.raises(RuntimeError):
             required_validation(checks, checks, regression)
+
+
+def test_archive_parts_preserve_the_exact_tested_bytes(tmp_path, monkeypatch):
+    import hashlib
+    from scripts.agentdesk import publication
+
+    monkeypatch.setattr(publication, 'PART_BYTES', 3)
+    archive = tmp_path / 'hermes-native.tar.gz'
+    payload = b'abcdefgh'
+    archive.write_bytes(payload)
+    record = publication.archive_record(archive)
+    assert not archive.exists()
+    assert record['sha256'] == hashlib.sha256(payload).hexdigest()
+    assert len(record['parts']) == 3
+    rebuilt = b''
+    for part in record['parts']:
+        content = (tmp_path / part['filename']).read_bytes()
+        assert len(content) == part['size']
+        assert hashlib.sha256(content).hexdigest() == part['sha256']
+        rebuilt += content
+    assert rebuilt == payload

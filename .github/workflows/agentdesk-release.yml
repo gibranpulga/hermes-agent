@@ -34,13 +34,27 @@ jobs:
           scripts/run_tests.sh tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_restart_recovery.py tests/hermes_cli/test_serve_runtime_inventory.py tests/scripts/agentdesk
           mkdir -p release
           printf '{"regression":true}\n' > release/regression.json
-      - name: Build using canonical locked runtime and compiled dashboard
-        env:
-          CANDIDATE: ${{ github.sha }}
+      - name: Prepare canonical locked runtime build
         run: |
           mkdir -p release
           cat Dockerfile scripts/agentdesk/image.Dockerfile > release.Dockerfile
-          docker build --target agentdesk_image --build-arg SOURCE_REVISION="$CANDIDATE" -f release.Dockerfile -t hermes-release:candidate .
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build using canonical locked runtime and compiled dashboard
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: 'false'
+        with:
+          context: .
+          file: release.Dockerfile
+          target: agentdesk_image
+          build-args: SOURCE_REVISION=${{ github.sha }}
+          tags: hermes-release:candidate
+          load: true
+          github-token: ''
+          cache-from: type=gha,scope=agentdesk-release
+          cache-to: type=gha,scope=agentdesk-release,mode=max,ignore-error=true
+      - name: Export and reload exact installation artifact
+        run: |
           docker image inspect --format '{{.Id}}' hermes-release:candidate > release/image-id
           docker save hermes-release:candidate | gzip -1 > release/hermes-image.tar.gz
           docker image rm hermes-release:candidate
@@ -69,6 +83,8 @@ jobs:
           sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh "$RUNNER_TEMP/native-payload"
           tar -C "$RUNNER_TEMP/native-payload" -czf release/hermes-native.tar.gz .
           python3 scripts/agentdesk/native_lifecycle.py release/hermes-native.tar.gz "$CANDIDATE" release/native-lifecycle.json
+          rm -rf "$RUNNER_TEMP/native-work" "$RUNNER_TEMP/native-cache" "$RUNNER_TEMP/native-payload" "$RUNNER_TEMP/web-dist"
+          docker system prune -af
           python3 scripts/agentdesk/publication.py record
       - name: Attest validated release record
         if: github.ref == 'refs/heads/main'

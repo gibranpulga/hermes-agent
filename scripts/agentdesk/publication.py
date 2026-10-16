@@ -8,6 +8,7 @@ import subprocess
 import tomllib
 
 REPOSITORY = 'gibranpulga/hermes-agent'
+PART_BYTES = 1024**3
 
 
 def eligible(candidate, main, sequence, published):
@@ -28,33 +29,63 @@ def output(*args):
     return subprocess.check_output(args, text=True, encoding="utf-8", timeout=60).strip()
 
 
+def archive_record(path):
+    size = path.stat().st_size
+    if not 0 < size <= 8 * 1024**3:
+        raise RuntimeError('Release archive exceeds supported installed-transfer size')
+    with path.open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    value = {'filename': path.name, 'sha256': digest}
+    if size <= PART_BYTES:
+        return value
+    parts = []
+    with path.open('rb') as source:
+        while source.tell() < size:
+            part = path.with_name(path.name + '.part-' + str(len(parts)).zfill(3))
+            checksum = hashlib.sha256()
+            remaining = min(PART_BYTES, size - source.tell())
+            count = remaining
+            with part.open('wb') as output:
+                while remaining:
+                    data = source.read(min(1024**2, remaining))
+                    if not data:
+                        raise RuntimeError('Release archive changed while partitioning')
+                    output.write(data)
+                    checksum.update(data)
+                    remaining -= len(data)
+            parts.append({'filename': part.name, 'sha256': checksum.hexdigest(), 'size': count})
+    value['parts'] = parts
+    path.unlink()
+    return value
+
+
+def artifact_assets(record):
+    names = []
+    for artifact in record['deployments'].values():
+        names.extend(part['filename'] for part in artifact['parts']) if artifact.get('parts') else names.append(artifact['filename'])
+    return [str(Path('release') / name) for name in names]
+
+
 def record():
     revision = os.environ['GITHUB_SHA']
     if output('git', 'rev-parse', 'HEAD') != revision:
         raise RuntimeError('Build checkout moved')
-    checks = json.loads(Path('release/lifecycle.json').read_text(encoding="utf-8-sig"))
-    if any(checks.get(key) is not True for key in ('install', 'restart', 'runningRevision', 'health', 'recovery')):
-        raise RuntimeError('Lifecycle validation incomplete')
-    archive = Path('release/hermes-image.tar.gz')
-    with archive.open('rb') as stream:
-        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-    if archive.stat().st_size >= 2 * 1024**3:
-        raise RuntimeError('Release asset exceeds GitHub distribution limit')
-    native_checks = json.loads(Path('release/native-lifecycle.json').read_text(encoding='utf-8-sig'))
-    checks = required_validation(checks, native_checks, json.loads(Path('release/regression.json').read_text(encoding='utf-8-sig')))
-    native_archive = Path('release/hermes-native.tar.gz')
-    if native_archive.stat().st_size >= 2 * 1024**3:
-        raise RuntimeError('Native asset exceeds GitHub distribution limit')
-    with native_archive.open('rb') as stream:
-        native_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    checks = required_validation(
+        json.loads(Path('release/lifecycle.json').read_text(encoding='utf-8-sig')),
+        json.loads(Path('release/native-lifecycle.json').read_text(encoding='utf-8-sig')),
+        json.loads(Path('release/regression.json').read_text(encoding='utf-8-sig')),
+    )
+    image = archive_record(Path('release/hermes-image.tar.gz'))
+    image['imageId'] = Path('release/image-id').read_text(encoding='utf-8-sig').strip()
+    native = archive_record(Path('release/hermes-native.tar.gz'))
+    native['minimumGlibc'] = platform.libc_ver()[1]
     value = {'schema': 1, 'repository': REPOSITORY,
              'workflow': REPOSITORY + '/.github/workflows/agentdesk-release.yml',
-             'revision': revision, 'version': tomllib.loads(Path('pyproject.toml').read_text(encoding="utf-8-sig"))['project']['version'] + '+fork.' + os.environ['GITHUB_RUN_NUMBER'],
+             'revision': revision, 'version': tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8-sig'))['project']['version'] + '+fork.' + os.environ['GITHUB_RUN_NUMBER'],
              'sequence': int(os.environ['GITHUB_RUN_NUMBER']), 'runId': os.environ['GITHUB_RUN_ID'],
              'notes': output('git', 'log', '-1', '--format=%s%n%b'),
              'compatibility': {'protocol': 1, 'os': 'linux', 'arch': 'x64', 'stateSchema': 1},
-             'deployments': {'image': {'filename': archive.name, 'sha256': digest, 'imageId': Path('release/image-id').read_text(encoding="utf-8-sig").strip()}, 'native': {'filename': native_archive.name, 'sha256': native_digest, 'minimumGlibc': platform.libc_ver()[1]}},
-             'validation': checks}
+             'deployments': {'image': image, 'native': native}, 'validation': checks}
     Path('release/release.json').write_text(json.dumps(value, sort_keys=True, indent=2) + '\n', encoding='utf-8')
 
 
@@ -80,7 +111,7 @@ def publish():
     # No clobber and no mutable release channel. Re-runs cannot replace artifacts.
     output('gh', 'release', 'create', tag, '--repo', REPOSITORY, '--target', record['revision'],
            '--draft', '--title', record['version'], '--notes', record['notes'],
-           'release/release.json', 'release/release.json.sigstore', 'release/hermes-image.tar.gz', 'release/hermes-native.tar.gz', 'release/lifecycle.json', 'release/native-lifecycle.json')
+           'release/release.json', 'release/release.json.sigstore', 'release/lifecycle.json', 'release/native-lifecycle.json', *artifact_assets(record))
     # Flip is the final publication operation; failed builds never reach it.
     output('gh', 'release', 'edit', tag, '--repo', REPOSITORY, '--draft=false', '--latest=false')
 

@@ -126,3 +126,7 @@ plans/
 /*.png.bak
 *.tar.gz
 *.tgz
+
+# Release validation outputs never enter application source layers.
+release/
+release.Dockerfile
