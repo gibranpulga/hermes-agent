@@ -81,7 +81,7 @@ def main():
             logs = captured.stdout + captured.stderr
             classes = sorted(set(re.findall(r'(?m)^([A-Za-z_.]+(?:Error|Exception)):', logs)))
             reasons = [text for text in ('Permission denied', 'Read-only file system', 'Address already in use', 'No module named') if text in logs]
-            print(json.dumps({'runtimeExitCode': status['ExitCode'], 'oomKilled': status['OOMKilled'], 'errorClasses': classes, 'reasonClasses': reasons, 'missingModules': sorted(set(re.findall(r"No module named ['\"]([A-Za-z0-9_.]+)", logs)))}))
+            print(json.dumps({'runtimeExitCode': status['ExitCode'], 'oomKilled': status['OOMKilled'], 'errorClasses': classes, 'reasonClasses': reasons, 'readonlyPaths': sorted(set(re.findall(r"Read-only file system: ['\"]([^'\"]+)", logs))), 'missingModules': sorted(set(re.findall(r"No module named ['\"]([A-Za-z0-9_.]+)", logs)))}))
             raise
         finally:
             run('docker', 'rm', '-f', name)

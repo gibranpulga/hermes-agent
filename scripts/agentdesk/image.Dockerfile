@@ -11,7 +11,7 @@ RUN cd /opt/hermes && python3 scripts/write_install_stamp.py --output install-st
  && ln -s /opt/hermes /var/lib/hermes/projects/hermes-agent \
  && ln -s /opt/hermes/tools /var/lib/hermes/.hermes/tools \
  && ln -s /opt/hermes/hermes_cli/web_dist /var/lib/hermes/.hermes/staging-web-dist \
- && printf '#!/bin/sh\ncd /opt/hermes\nexport HERMES_RUNTIME_DIR=/opt/hermes/tools HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist\nexec /opt/hermes/.venv/bin/python -m hermes_cli.main "$@"\n' > /usr/local/bin/hermes \
+ && printf '#!/bin/sh\ncd /opt/hermes\nexport HOME=/state XDG_CACHE_HOME=/state/cache HERMES_RUNTIME_DIR=/opt/hermes/tools HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist\nexec /opt/hermes/.venv/bin/python -m hermes_cli.main "$@"\n' > /usr/local/bin/hermes \
  && chmod 0755 /usr/local/bin/hermes
 ENV HERMES_PYTHON=/opt/hermes/.venv/bin/python HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/state HERMES_WRITE_SAFE_ROOT=/state
