@@ -18,7 +18,7 @@ VPS configuration. Logs and temporary state stay on the disposable runner.
 Only successful validation reaches attestation/publication. `release.json`
 binds the exact commit, workflow, monotonically increasing run number, version,
 notes, protocol/platform/state-schema compatibility, supported adapters,
-SHA-256 archives, image identity and lifecycle results. The manifest is attested
+SHA-256 archives, the original image configuration-blob digest and lifecycle results. Docker image stores can expose different local IDs for the same exported image; consumers compare its exact rootfs layers and normalized configuration to the verified archive before selecting a local immutable image ID. A tag is never an authorization decision. The manifest is attested
 with GitHub's Sigstore integration, and its bundle is a release asset.
 
 Consumers must run `gh attestation verify` with the expected repository,

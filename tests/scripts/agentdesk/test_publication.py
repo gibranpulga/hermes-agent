@@ -74,3 +74,26 @@ def test_main_moving_during_upload_prevents_final_publication(tmp_path, monkeypa
     upload = [operation for operation in operations if operation[0][:3] == ('gh', 'release', 'create')]
     assert upload[0][1]['timeout'] == 1800
     assert not any(operation[0][:3] == ('gh', 'release', 'edit') for operation in operations)
+
+
+def test_image_identity_comes_from_the_tested_archive_not_a_daemon_local_id(tmp_path):
+    import hashlib
+    import io
+    import json
+    import tarfile
+    from scripts.agentdesk.publication import archive_image_id
+
+    revision = 'a' * 40
+    config = {'os': 'linux', 'architecture': 'amd64', 'config': {'Labels': {'org.opencontainers.image.revision': revision}}}
+    data = json.dumps(config).encode()
+    checksum = hashlib.sha256(data).hexdigest()
+    path = tmp_path / 'image.tar.gz'
+    name = 'blobs/sha256/' + checksum
+    with tarfile.open(path, 'w:gz') as bundle:
+        for filename, content in [(name, data), ('manifest.json', json.dumps([{'Config': name, 'RepoTags': ['hermes-release:candidate']}]).encode())]:
+            member = tarfile.TarInfo(filename)
+            member.size = len(content)
+            bundle.addfile(member, io.BytesIO(content))
+    assert archive_image_id(path, revision) == 'sha256:' + checksum
+    with pytest.raises(RuntimeError, match='source identity'):
+        archive_image_id(path, 'b' * 40)

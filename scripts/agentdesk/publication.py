@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import platform
+import re
+import tarfile
 from pathlib import Path
 import subprocess
 import tomllib
@@ -67,6 +69,40 @@ def artifact_assets(record):
     return [str(RELEASE_DIR / name) for name in names]
 
 
+
+def archive_image_id(path, revision):
+    """Publish a config-blob digest, independent of the builder's image store."""
+    manifest = None
+    with tarfile.open(path, 'r|*') as bundle:
+        for member in bundle:
+            if member.name == 'manifest.json':
+                if not member.isfile() or member.size > 1024**2:
+                    raise RuntimeError('Image archive manifest is invalid')
+                manifest = json.loads(bundle.extractfile(member).read())
+    if not isinstance(manifest, list) or len(manifest) != 1 or manifest[0].get('RepoTags') != ['hermes-release:candidate']:
+        raise RuntimeError('Image archive must contain the fixed candidate only')
+    name = manifest[0].get('Config', '')
+    match = re.fullmatch(r'(?:blobs/sha256/([a-f0-9]{64})|([a-f0-9]{64})\.json)', name)
+    if not match:
+        raise RuntimeError('Image configuration name is not a content digest')
+    checksum = match.group(1) or match.group(2)
+    with tarfile.open(path, 'r|*') as bundle:
+        for member in bundle:
+            if member.name != name:
+                continue
+            if not member.isfile() or member.size > 1024**2:
+                raise RuntimeError('Image configuration is invalid')
+            content = bundle.extractfile(member).read()
+            config = json.loads(content)
+            if hashlib.sha256(content).hexdigest() != checksum:
+                raise RuntimeError('Image configuration digest changed')
+            if (config.get('os') != 'linux' or config.get('architecture') != 'amd64' or
+                    config.get('config', {}).get('Labels', {}).get('org.opencontainers.image.revision') != revision):
+                raise RuntimeError('Image platform or source identity changed')
+            return 'sha256:' + checksum
+    raise RuntimeError('Image configuration is missing from the tested archive')
+
+
 def record():
     revision = os.environ['GITHUB_SHA']
     if output('git', 'rev-parse', 'HEAD') != revision:
@@ -76,8 +112,9 @@ def record():
         json.loads((RELEASE_DIR / 'native-lifecycle.json').read_text(encoding='utf-8-sig')),
         json.loads((RELEASE_DIR / 'regression.json').read_text(encoding='utf-8-sig')),
     )
+    config_id = archive_image_id(RELEASE_DIR / 'hermes-image.tar.gz', revision)
     image = archive_record(RELEASE_DIR / 'hermes-image.tar.gz')
-    image['imageId'] = (RELEASE_DIR / 'image-id').read_text(encoding='utf-8-sig').strip()
+    image['imageId'] = config_id
     native = archive_record(RELEASE_DIR / 'hermes-native.tar.gz')
     native['minimumGlibc'] = platform.libc_ver()[1]
     value = {'schema': 1, 'repository': REPOSITORY,
