@@ -16,19 +16,26 @@ from urllib import request
 
 def ready(revision, children):
     deadline = time.monotonic() + 300
+    evidence = {}
     while time.monotonic() < deadline:
         if any(child.poll() is not None for child in children):
             raise RuntimeError("Native runtime exited during verification")
-        try:
-            with request.urlopen('http://127.0.0.1:19219/api/health', timeout=3) as response:
-                desktop = json.load(response)
-            with request.urlopen('http://127.0.0.1:19220/health', timeout=3) as response:
-                gateway = json.load(response)
-            if desktop.get('ok') is True and desktop.get('commit') == revision and gateway.get('status') == 'ok':
-                return
-        except (OSError, ValueError):
-            pass
+        for name, url, fields in (
+            ('desktop', 'http://127.0.0.1:19219/api/health', ('ok', 'commit')),
+            ('gateway', 'http://127.0.0.1:19220/health', ('status',)),
+        ):
+            try:
+                with request.urlopen(url, timeout=3) as response:
+                    data = json.load(response)
+                # Only public health fields; never echo arbitrary HTTP bodies.
+                evidence[name] = {key: data.get(key) for key in fields}
+            except (OSError, ValueError) as error:
+                evidence[name] = {'error': type(error).__name__}
+        desktop, gateway = evidence['desktop'], evidence['gateway']
+        if desktop.get('ok') is True and desktop.get('commit') == revision and gateway.get('status') == 'ok':
+            return
         time.sleep(2)
+    print(json.dumps({'nativeHealthEvidence': evidence}), flush=True)
     raise RuntimeError('Native artifact process revision or health verification failed')
 
 
@@ -70,6 +77,9 @@ def main():
         with tarfile.open(args.archive) as archive:
             archive.extractall(payload, filter='data')
         manifest = json.loads((payload / 'manifest.json').read_text(encoding='utf-8-sig'))
+        stamp = json.loads((payload / 'hermes-agent/install-stamp.json').read_text(encoding='utf-8-sig'))
+        if stamp.get('commit') != args.revision or stamp.get('updateMechanism') != 'external':
+            raise RuntimeError('Native artifact identity or update ownership mismatch')
         command = (payload / manifest['runtime']['commands']['hermes']).resolve()
         if not command.is_relative_to(payload):
             raise RuntimeError('Native launcher escapes payload')

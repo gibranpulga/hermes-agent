@@ -85,6 +85,7 @@ jobs:
           root = Path(os.environ['RUNNER_TEMP'])
           raise SystemExit(finish_native(root / 'native-payload.prepared.json', {'web': root / 'web-dist'}))
           PYTHON
+          python3 scripts/write_install_stamp.py --output "$RUNNER_TEMP/native-payload/hermes-agent/install-stamp.json" --commit "$CANDIDATE" --source ci --update-mechanism external --runtime-dir ..
           sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh "$RUNNER_TEMP/native-payload"
           tar -C "$RUNNER_TEMP/native-payload" -czf "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" .
           python3 scripts/agentdesk/native_lifecycle.py "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" "$CANDIDATE" "$AGENTDESK_RELEASE_DIR/native-lifecycle.json"
