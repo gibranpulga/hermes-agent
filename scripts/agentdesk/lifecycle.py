@@ -1,6 +1,7 @@
 """Exercise the exact exported image on a disposable Docker daemon, no VPS access."""
 import argparse
 import json
+import inspect
 import os
 import re
 from pathlib import Path
@@ -33,6 +34,42 @@ def ready(name, revision):
         except (subprocess.SubprocessError, ValueError, OSError, RuntimeError):
             time.sleep(2)
     raise RuntimeError('Disposable runtime failed health verification')
+
+
+def listening_pids(proc, port):
+    """Find the real HTTP listener, including inherited/shared socket owners."""
+    sockets = set()
+    for protocol in ('tcp', 'tcp6'):
+        table = proc / 'net' / protocol
+        if table.exists():
+            for line in table.read_text(encoding='utf-8-sig').splitlines()[1:]:
+                fields = line.split()
+                if len(fields) >= 10 and fields[1].endswith(':' + format(port, '04X')) and fields[3] == '0A':
+                    sockets.add('socket:[' + fields[9] + ']')
+    owners = set()
+    for process in proc.iterdir():
+        if not process.name.isdigit() or int(process.name) <= 1:
+            continue
+        try:
+            for descriptor in (process / 'fd').iterdir():
+                try:
+                    if os.readlink(descriptor) in sockets:
+                        owners.add(int(process.name))
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return owners
+
+
+def supervisor_ready(name):
+    started = run('docker', 'inspect', '--format', '{{.State.StartedAt}}', name)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if 'Fixed runtime health checks passed.' in run('docker', 'logs', '--since', started, name):
+            return
+        time.sleep(1)
+    raise RuntimeError('Supervisor did not observe healthy startup before fault injection')
 
 
 def main():
@@ -71,7 +108,10 @@ def main():
                 raise RuntimeError('Restart did not replace the running process')
             # A frozen dashboard still has a live PID. Its image-owned supervisor
             # must detect failed HTTP health and exit instead of leaving a wedge.
-            freeze = "import os,signal;from pathlib import Path;matches=[int(p.name) for p in Path('/proc').iterdir() if p.name.isdigit() and int(p.name)>1 and (p/'cmdline').exists() and b'\\0dashboard\\0' in (p/'cmdline').read_bytes()];assert matches;os.kill(matches[0],signal.SIGSTOP)"
+            supervisor_ready(name)
+            freeze = ('import os,signal\nfrom pathlib import Path\n' + inspect.getsource(listening_pids) +
+                      "\npids=listening_pids(Path('/proc'),9119)\nassert pids, 'No dashboard HTTP socket owner found'\n" +
+                      "for pid in pids: os.kill(pid,signal.SIGSTOP)\n")
             run('docker', 'exec', name, 'python3', '-c', freeze)
             deadline = time.monotonic() + 120
             while run('docker', 'inspect', '--format', '{{.State.Running}}', name) == 'true' and time.monotonic() < deadline:

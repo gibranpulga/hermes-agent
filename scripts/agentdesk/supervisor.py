@@ -53,6 +53,8 @@ def main():
             now = time.monotonic()
             if now >= next_probe:
                 if healthy(revision):
+                    if not ready:
+                        print('Fixed runtime health checks passed.', flush=True)
                     ready = True
                     failures = 0
                 else:
