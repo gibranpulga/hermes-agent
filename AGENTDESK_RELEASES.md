@@ -15,6 +15,14 @@ running health endpoint, survive restart/abrupt termination, and retain fresh
 synthetic state. There are no production credentials, provider calls or copied
 VPS configuration. Logs and temporary state stay on the disposable runner.
 
+Image supervision also checks both fixed loopback health endpoints. After the
+initial startup grace, six consecutive failed probes stop both processes and
+exit for the existing container restart policy. A wrong running commit also
+fails health. Disposable validation freezes a live dashboard with SIGSTOP,
+requires the image supervisor to exit, starts it again and verifies recovery
+with the same state volume. The host bootstrap delegates to this image-owned
+supervisor, so subsequent runtime fixes arrive in the tested release artifact.
+
 Only successful validation reaches attestation/publication. `release.json`
 binds the exact commit, workflow, monotonically increasing run number, version,
 notes, protocol/platform/state-schema compatibility, supported adapters,

@@ -69,6 +69,17 @@ def main():
             ready(name, args.revision)
             if run('docker', 'inspect', '--format', '{{.State.StartedAt}}', name) == first:
                 raise RuntimeError('Restart did not replace the running process')
+            # A frozen dashboard still has a live PID. Its image-owned supervisor
+            # must detect failed HTTP health and exit instead of leaving a wedge.
+            freeze = "import os,signal;from pathlib import Path;matches=[int(p.name) for p in Path('/proc').iterdir() if p.name.isdigit() and int(p.name)>1 and (p/'cmdline').exists() and b'\\0dashboard\\0' in (p/'cmdline').read_bytes()];assert matches;os.kill(matches[0],signal.SIGSTOP)"
+            run('docker', 'exec', name, 'python3', '-c', freeze)
+            deadline = time.monotonic() + 120
+            while run('docker', 'inspect', '--format', '{{.State.Running}}', name) == 'true' and time.monotonic() < deadline:
+                time.sleep(2)
+            if run('docker', 'inspect', '--format', '{{.State.Running}}', name) != 'false':
+                raise RuntimeError('Live but unresponsive dashboard was not recovered by supervision')
+            run('docker', 'start', name)
+            ready(name, args.revision)
             # Abrupt worker/runtime loss must recover with the same volume.
             run('docker', 'kill', name)
             run('docker', 'start', name)
