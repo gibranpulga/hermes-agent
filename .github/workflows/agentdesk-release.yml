@@ -1,7 +1,7 @@
 name: Validated AgentDesk release
 on:
   push:
-    branches: [main, feat/agentdesk-release-automation]
+    branches: [main]
 permissions: {}
 # The explicit SHA/sequence publication fence also handles reversed queue order.
 concurrency:

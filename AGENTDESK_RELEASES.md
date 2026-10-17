@@ -65,10 +65,10 @@ Official limits checked 2026-10-17:
 - https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations
   Attestations are available for public repositories on GitHub Free.
 
-## Current acceptance gate
+## Acceptance requirements
 
-This implementation is under validation. Branch pushes run checks but cannot
-attest or publish. Do not call it operational until two distinct main commits
+Every main push must pass all gates before attestation and publication.
+Do not call the update flow operational until two distinct main commits
 have published and been installed without manual pins, including the real
 Electron → persisted backend job → independent staging2 worker → runtime
 restart → reconnection → verified final receipt test. Native host launchers and
