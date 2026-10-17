@@ -83,6 +83,7 @@ def main():
         command = (payload / manifest['runtime']['commands']['hermes']).resolve()
         if not command.is_relative_to(payload):
             raise RuntimeError('Native launcher escapes payload')
+        immutable_paths = {path.relative_to(payload).as_posix() for path in payload.rglob('*')}
         state = root / 'state'
         state.mkdir()
         config = {'platforms': {'api_server': {'enabled': True, 'key': secrets.token_urlsafe(24), 'host': '127.0.0.1', 'port': 19220}}, 'gateway': {'multiplex_profiles': False},
@@ -91,7 +92,7 @@ def main():
         (state / 'preserve.txt').write_text('existing-user-state', encoding='utf-8')
         env = {key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'TMPDIR')}
         env.update({'HOME': str(root), 'HERMES_HOME': str(state), 'UV_OFFLINE': '1', 'npm_config_offline': 'true',
-                    'HERMES_KANBAN_DISPATCH_IN_GATEWAY': 'false', 'HERMES_BACKGROUND_NOTIFICATIONS': 'off'})
+                    'PYTHONDONTWRITEBYTECODE': '1', 'HERMES_KANBAN_DISPATCH_IN_GATEWAY': 'false', 'HERMES_BACKGROUND_NOTIFICATIONS': 'off'})
         for cycle in range(3):
             children = []
             try:
@@ -109,6 +110,8 @@ def main():
                 raise
             finally:
                 stop(children, abrupt=cycle == 1)
+            if {path.relative_to(payload).as_posix() for path in payload.rglob('*')} != immutable_paths:
+                raise RuntimeError('Native runtime wrote unexpected files inside its immutable payload')
             if (state / 'preserve.txt').read_text(encoding='utf-8-sig') != 'existing-user-state':
                 raise RuntimeError('Native restart/recovery changed user state')
         args.output.write_text(json.dumps({'install': True, 'restart': True, 'runningRevision': True, 'health': True, 'recovery': True}), encoding='utf-8')
