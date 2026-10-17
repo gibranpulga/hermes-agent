@@ -7,7 +7,7 @@ import re
 import tarfile
 from pathlib import Path
 import subprocess
-import tomllib
+from hermes_cli.version_info import get_version_info
 
 REPOSITORY = 'gibranpulga/hermes-agent'
 PART_BYTES = 1024**3
@@ -103,6 +103,13 @@ def archive_image_id(path, revision):
     raise RuntimeError('Image configuration is missing from the tested archive')
 
 
+def release_version(revision, sequence):
+    info = get_version_info()
+    if info.commit != revision or info.base_version in ('unknown', '0.0.0'):
+        raise RuntimeError('Canonical release version or source identity is unavailable')
+    return info.base_version + '+fork.' + str(sequence)
+
+
 def record():
     revision = os.environ['GITHUB_SHA']
     if output('git', 'rev-parse', 'HEAD') != revision:
@@ -119,7 +126,7 @@ def record():
     native['minimumGlibc'] = platform.libc_ver()[1]
     value = {'schema': 1, 'repository': REPOSITORY,
              'workflow': REPOSITORY + '/.github/workflows/agentdesk-release.yml',
-             'revision': revision, 'version': tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8-sig'))['project']['version'] + '+fork.' + os.environ['GITHUB_RUN_NUMBER'],
+             'revision': revision, 'version': release_version(revision, os.environ['GITHUB_RUN_NUMBER']),
              'sequence': int(os.environ['GITHUB_RUN_NUMBER']), 'runId': os.environ['GITHUB_RUN_ID'],
              'notes': output('git', 'log', '-1', '--format=%s%n%b'),
              'compatibility': {'protocol': 1, 'os': 'linux', 'arch': 'x64', 'stateSchema': 1},

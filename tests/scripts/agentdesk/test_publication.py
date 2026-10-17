@@ -97,3 +97,16 @@ def test_image_identity_comes_from_the_tested_archive_not_a_daemon_local_id(tmp_
     assert archive_image_id(path, revision) == 'sha256:' + checksum
     with pytest.raises(RuntimeError, match='source identity'):
         archive_image_id(path, 'b' * 40)
+
+
+def test_release_label_uses_canonical_version_and_rejects_placeholder_or_stale_identity(monkeypatch):
+    from types import SimpleNamespace
+    from scripts.agentdesk import publication
+
+    revision = 'a' * 40
+    monkeypatch.setattr(publication, 'get_version_info', lambda: SimpleNamespace(commit=revision, base_version='0.21.6'))
+    assert publication.release_version(revision, 10) == '0.21.6+fork.10'
+    for base, commit in [('0.0.0', revision), ('unknown', revision), ('0.21.6', 'b' * 40)]:
+        monkeypatch.setattr(publication, 'get_version_info', lambda: SimpleNamespace(commit=commit, base_version=base))
+        with pytest.raises(RuntimeError, match='version or source identity'):
+            publication.release_version(revision, 10)
