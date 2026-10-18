@@ -45,6 +45,7 @@ jobs:
                   {'Authorization': 'Bearer ' + access})
               if details.get('is_private') is not True:
                   raise ValueError('Repository privacy was not confirmed')
+              print('Repository privacy verified')
               for key, expected in [('PUSH_TOKEN', {'pull', 'push'}), ('PULL_TOKEN', {'pull'})]:
                   basic = base64.b64encode((username + ':' + os.environ[key]).encode()).decode()
                   query = parse.urlencode({'service': 'registry.docker.io', 'scope': 'repository:' + name + ':pull,push,delete'})
@@ -59,6 +60,9 @@ jobs:
                       raise ValueError(key + ' has unexpected repository permissions')
                   print(key + ': expected permissions verified')
               print('PASS: private repository, read/write without delete, and separate read-only credentials')
+          except ValueError as exc:
+              print('Docker Hub preflight failed: ' + str(exc), file=sys.stderr)
+              sys.exit(1)
           except HTTPError as exc:
               print('Docker Hub preflight failed: HTTP ' + str(exc.code), file=sys.stderr)
               sys.exit(1)
