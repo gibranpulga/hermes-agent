@@ -49,24 +49,25 @@ jobs:
               invalid = []
               for key, expected in [('PUSH_TOKEN', {'pull', 'push'}), ('PULL_TOKEN', {'pull'})]:
                   basic = base64.b64encode((username + ':' + os.environ[key]).encode()).decode()
-                  query = parse.urlencode({'service': 'registry.docker.io', 'scope': 'repository:' + name + ':pull,push,delete'})
-                  try:
-                      token = fetch('https://auth.docker.io/token?' + query, {'Authorization': 'Basic ' + basic})['token']
-                  except HTTPError as exc:
-                      print(key + ': registry authentication failed: HTTP ' + str(exc.code))
-                      invalid.append(key)
-                      continue
-                  # Decode only the TLS-authenticated registry response; this is
-                  # a permissions probe, never an installation trust decision.
-                  payload = token.split('.')[1]
-                  claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
-                  entries = [entry for entry in claims.get('access', []) if entry.get('name') == name and entry.get('type') == 'repository']
-                  actions = set(entries[0]['actions']) if len(entries) == 1 else set()
-                  print(key + ': granted actions=' + ','.join(sorted(actions)))
-                  if actions != expected:
-                      invalid.append(key)
-                      continue
-                  print(key + ': expected permissions verified')
+                  for probe, requested in [('required', expected), ('excess', {'pull', 'push', 'delete'})]:
+                      query = parse.urlencode({'service': 'registry.docker.io', 'scope': 'repository:' + name + ':' + ','.join(sorted(requested))})
+                      try:
+                          token = fetch('https://auth.docker.io/token?' + query, {'Authorization': 'Basic ' + basic})['token']
+                      except HTTPError as exc:
+                          print(key + ': ' + probe + ' scope: HTTP ' + str(exc.code))
+                          if probe == 'excess' and exc.code in (401, 403):
+                              continue
+                          invalid.append(key)
+                          continue
+                      # Claims describe only this TLS-authenticated permission probe.
+                      # Installation provenance is verified separately.
+                      payload = token.split('.')[1]
+                      claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+                      entries = [entry for entry in claims.get('access', []) if entry.get('name') == name and entry.get('type') == 'repository']
+                      actions = set(entries[0]['actions']) if len(entries) == 1 else set()
+                      print(key + ': ' + probe + ' actions=' + ','.join(sorted(actions)))
+                      if actions != expected:
+                          invalid.append(key)
               if invalid:
                   raise ValueError(','.join(invalid) + ' have unexpected repository permissions')
               print('PASS: private repository, read/write without delete, and separate read-only credentials')
