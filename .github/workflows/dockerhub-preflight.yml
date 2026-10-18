@@ -56,6 +56,7 @@ jobs:
                   claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
                   entries = [entry for entry in claims.get('access', []) if entry.get('name') == name and entry.get('type') == 'repository']
                   actions = set(entries[0]['actions']) if len(entries) == 1 else set()
+                  print(key + ': granted actions=' + ','.join(sorted(actions)))
                   if actions != expected:
                       raise ValueError(key + ' has unexpected repository permissions')
                   print(key + ': expected permissions verified')
