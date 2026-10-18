@@ -50,7 +50,12 @@ jobs:
               for key, expected in [('PUSH_TOKEN', {'pull', 'push'}), ('PULL_TOKEN', {'pull'})]:
                   basic = base64.b64encode((username + ':' + os.environ[key]).encode()).decode()
                   query = parse.urlencode({'service': 'registry.docker.io', 'scope': 'repository:' + name + ':pull,push,delete'})
-                  token = fetch('https://auth.docker.io/token?' + query, {'Authorization': 'Basic ' + basic})['token']
+                  try:
+                      token = fetch('https://auth.docker.io/token?' + query, {'Authorization': 'Basic ' + basic})['token']
+                  except HTTPError as exc:
+                      print(key + ': registry authentication failed: HTTP ' + str(exc.code))
+                      invalid.append(key)
+                      continue
                   # Decode only the TLS-authenticated registry response; this is
                   # a permissions probe, never an installation trust decision.
                   payload = token.split('.')[1]
