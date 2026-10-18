@@ -15,6 +15,8 @@ jobs:
     if: github.repository == 'gibranpulga/hermes-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: read
     steps:
@@ -40,6 +42,12 @@ jobs:
           scripts/run_tests.sh tests/hermes_cli/test_update_inventory.py tests/hermes_cli/test_update_restart_recovery.py tests/hermes_cli/test_serve_runtime_inventory.py tests/scripts/agentdesk
           mkdir -p "$AGENTDESK_RELEASE_DIR"
           printf '{"regression":true}\n' > "$AGENTDESK_RELEASE_DIR/regression.json"
+      - name: Freeze the canonical version for both tested installation payloads
+        id: version
+        run: |
+          version=$(python3 scripts/agentdesk/publication.py version)
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'AGENTDESK_RELEASE_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
       - name: Prepare canonical locked runtime build
         run: |
           mkdir -p "$AGENTDESK_RELEASE_DIR"
@@ -53,7 +61,9 @@ jobs:
           context: .
           file: ${{ runner.temp }}/agentdesk-release.Dockerfile
           target: agentdesk_image
-          build-args: SOURCE_REVISION=${{ github.sha }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            RELEASE_VERSION=${{ env.AGENTDESK_RELEASE_VERSION }}
           tags: hermes-release:candidate
           load: true
           github-token: ''
@@ -81,10 +91,10 @@ jobs:
           root = Path(os.environ['RUNNER_TEMP'])
           raise SystemExit(finish_native(root / 'native-payload.prepared.json', {'web': root / 'web-dist'}))
           PYTHON
-          python3 scripts/write_install_stamp.py --output "$RUNNER_TEMP/native-payload/hermes-agent/install-stamp.json" --commit "$CANDIDATE" --source ci --update-mechanism external --runtime-dir ..
+          python3 scripts/write_install_stamp.py --output "$RUNNER_TEMP/native-payload/hermes-agent/install-stamp.json" --commit "$CANDIDATE" --base-version "$AGENTDESK_RELEASE_VERSION" --distance 0 --source ci --update-mechanism external --runtime-dir ..
           sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh "$RUNNER_TEMP/native-payload"
           tar -C "$RUNNER_TEMP/native-payload" -czf "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" .
-          python3 scripts/agentdesk/native_lifecycle.py "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" "$CANDIDATE" "$AGENTDESK_RELEASE_DIR/native-lifecycle.json"
+          python3 scripts/agentdesk/native_lifecycle.py "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" "$CANDIDATE" "$AGENTDESK_RELEASE_DIR/native-lifecycle.json" --version "$AGENTDESK_RELEASE_VERSION"
           rm -rf "$RUNNER_TEMP/native-work" "$RUNNER_TEMP/native-cache" "$RUNNER_TEMP/native-payload" "$RUNNER_TEMP/web-dist"
           docker system prune -af
       # One short-lived cross-job transfer; images are never release assets.
@@ -136,13 +146,14 @@ jobs:
           path: ${{ env.AGENTDESK_RELEASE_DIR }}/image.json
           retention-days: 1
   validate-image:
-    needs: upload-image
+    needs: [build, upload-image]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
       contents: read
     env:
       AGENTDESK_RELEASE_DIR: release
+      AGENTDESK_RELEASE_VERSION: ${{ needs.build.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -165,7 +176,7 @@ jobs:
       - name: Exercise exact pulled installation, restart, health and recovery
         run: |
           image=$(python3 -c 'import json,os; print(json.load(open(os.environ["AGENTDESK_RELEASE_DIR"]+"/image.json"))["imageId"])')
-          python3 scripts/agentdesk/lifecycle.py "$image" "$GITHUB_SHA" "$AGENTDESK_RELEASE_DIR/lifecycle.json"
+          python3 scripts/agentdesk/lifecycle.py "$image" "$GITHUB_SHA" "$AGENTDESK_RELEASE_DIR/lifecycle.json" --version "$AGENTDESK_RELEASE_VERSION"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: registry-validation
@@ -183,6 +194,7 @@ jobs:
       attestations: write
     env:
       AGENTDESK_RELEASE_DIR: release
+      AGENTDESK_RELEASE_VERSION: ${{ needs.build.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

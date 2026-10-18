@@ -16,20 +16,20 @@ def run(*args):
     return subprocess.check_output(args, text=True, encoding="utf-8", timeout=180, stderr=subprocess.PIPE).strip()
 
 
-def probe(name, revision):
+def probe(name, revision, version=None):
     result = json.loads(run('docker', 'exec', name, 'curl', '-fsS', '--max-time', '3', 'http://127.0.0.1:9119/api/health'))
     gateway = json.loads(run('docker', 'exec', name, 'curl', '-fsS', '--max-time', '3', 'http://127.0.0.1:9120/health'))
-    if result.get('ok') is not True or result.get('commit') != revision or gateway.get('status') != 'ok':
-        raise RuntimeError('Actual process revision or health mismatch')
+    if result.get('ok') is not True or result.get('commit') != revision or gateway.get('status') != 'ok' or (version is not None and result.get('version') != version):
+        raise RuntimeError('Actual process version, revision or health mismatch')
 
 
-def ready(name, revision):
+def ready(name, revision, version=None):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         if run('docker', 'inspect', '--format', '{{.State.Running}}', name) != 'true':
             raise RuntimeError('Disposable runtime exited before health verification')
         try:
-            probe(name, revision)
+            probe(name, revision, version)
             return
         except (subprocess.SubprocessError, ValueError, OSError, RuntimeError):
             time.sleep(2)
@@ -77,6 +77,7 @@ def main():
     parser.add_argument('image')
     parser.add_argument('revision')
     parser.add_argument('output', type=Path)
+    parser.add_argument('--version', help='Build-frozen canonical release version')
     args = parser.parse_args()
     name = 'hermes-release-' + secrets.token_hex(6)
     with tempfile.TemporaryDirectory() as temporary:
@@ -100,10 +101,10 @@ def main():
                 '--workdir', '/var/lib/hermes/projects/hermes-agent',
                 '--entrypoint', '/var/lib/hermes/.hermes/installs/bcb380a4495ec6cc/environments/f878407c2d4f434794c12650f8fc54c4/venv/bin/python',
                 args.image, '/opt/hermes/scripts/agentdesk/supervisor.py')
-            ready(name, args.revision)
+            ready(name, args.revision, args.version)
             first = run('docker', 'inspect', '--format', '{{.State.StartedAt}}', name)
             run('docker', 'restart', name)
-            ready(name, args.revision)
+            ready(name, args.revision, args.version)
             if run('docker', 'inspect', '--format', '{{.State.StartedAt}}', name) == first:
                 raise RuntimeError('Restart did not replace the running process')
             # A frozen dashboard still has a live PID. Its image-owned supervisor
@@ -119,11 +120,11 @@ def main():
             if run('docker', 'inspect', '--format', '{{.State.Running}}', name) != 'false':
                 raise RuntimeError('Live but unresponsive dashboard was not recovered by supervision')
             run('docker', 'start', name)
-            ready(name, args.revision)
+            ready(name, args.revision, args.version)
             # Abrupt worker/runtime loss must recover with the same volume.
             run('docker', 'kill', name)
             run('docker', 'start', name)
-            ready(name, args.revision)
+            ready(name, args.revision, args.version)
             if (state / 'preserve.txt').read_text(encoding="utf-8-sig") != 'existing-user-state':
                 raise RuntimeError('User state was not retained')
             args.output.write_text(json.dumps({'install': True, 'restart': True, 'runningRevision': True, 'health': True, 'recovery': True}), encoding='utf-8')

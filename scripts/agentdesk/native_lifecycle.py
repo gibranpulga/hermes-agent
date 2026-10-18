@@ -14,14 +14,14 @@ import time
 from urllib import request
 
 
-def ready(revision, children):
+def ready(revision, children, version=None):
     deadline = time.monotonic() + 300
     evidence = {}
     while time.monotonic() < deadline:
         if any(child.poll() is not None for child in children):
             raise RuntimeError("Native runtime exited during verification")
         for name, url, fields in (
-            ('desktop', 'http://127.0.0.1:19219/api/health', ('ok', 'commit')),
+            ('desktop', 'http://127.0.0.1:19219/api/health', ('ok', 'commit', 'version')),
             ('gateway', 'http://127.0.0.1:19220/health', ('status',)),
         ):
             try:
@@ -32,7 +32,7 @@ def ready(revision, children):
             except (OSError, ValueError) as error:
                 evidence[name] = {'error': type(error).__name__}
         desktop, gateway = evidence['desktop'], evidence['gateway']
-        if desktop.get('ok') is True and desktop.get('commit') == revision and gateway.get('status') == 'ok':
+        if desktop.get('ok') is True and desktop.get('commit') == revision and gateway.get('status') == 'ok' and (version is None or desktop.get('version') == version):
             return
         time.sleep(2)
     print(json.dumps({'nativeHealthEvidence': evidence}), flush=True)
@@ -70,6 +70,7 @@ def main():
     parser.add_argument('archive', type=Path)
     parser.add_argument('revision')
     parser.add_argument('output', type=Path)
+    parser.add_argument('--version', help='Build-frozen canonical release version')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='native-validation-') as temporary:
         root = Path(temporary)
@@ -99,7 +100,7 @@ def main():
                 with (root / 'process.log').open('ab') as log:
                     for arguments in [('dashboard', '--host', '127.0.0.1', '--port', '19219', '--no-open', '--skip-build'), ('gateway', 'run')]:
                         children.append(subprocess.Popen([str(command), *arguments], cwd=root, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True))
-                    ready(args.revision, children)
+                    ready(args.revision, children, args.version)
             except Exception:
                 # Only synthetic runner state is used here; never host credentials.
                 logs = (root / 'process.log').read_text(encoding='utf-8-sig', errors='replace')

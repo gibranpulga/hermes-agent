@@ -154,3 +154,16 @@ def test_validator_pulls_the_published_digest_and_rejects_changed_config(tmp_pat
     with pytest.raises(RuntimeError, match='differs'):
         publication.pull_image()
     assert commands[0] == ('docker', 'pull', '--platform', 'linux/amd64', allowed + '@' + value['digest'])
+
+
+def test_record_keeps_the_version_validated_before_later_tag_changes(monkeypatch):
+    from scripts.agentdesk import publication
+
+    def moved_tags():
+        raise AssertionError('Publication must not re-resolve mutable release tags')
+
+    monkeypatch.setattr(publication, 'get_version_info', moved_tags)
+    assert publication.release_version('a' * 40, 13, '0.21.5+fork.13') == '0.21.5+fork.13'
+    for version in ['0.21.5+fork.12', '0.0.0+fork.13', 'unknown', '0.21.5+fork.13\n']:
+        with pytest.raises(RuntimeError, match='validated build sequence'):
+            publication.release_version('a' * 40, 13, version)

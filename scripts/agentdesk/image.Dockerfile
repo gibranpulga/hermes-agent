@@ -3,8 +3,9 @@
 FROM runtime_base AS agentdesk_image
 COPY --from=runtime /opt/hermes /opt/hermes
 ARG SOURCE_REVISION
-RUN cd /opt/hermes && python3 scripts/write_install_stamp.py --output install-stamp.json \
-    --commit "$SOURCE_REVISION" --source ci --distribution docker --update-mechanism external \
+ARG RELEASE_VERSION
+RUN test -n "$RELEASE_VERSION" && cd /opt/hermes && python3 scripts/write_install_stamp.py --output install-stamp.json \
+    --commit "$SOURCE_REVISION" --base-version "$RELEASE_VERSION" --distance 0 --source ci --distribution docker --update-mechanism external \
  && python3 -c 'import json,pathlib; p=pathlib.Path("install-stamp.json"); s=json.loads(p.read_text()); s["pmRuntime"]="/opt/hermes/pm-runtime"; p.write_text(json.dumps(s)); d=pathlib.Path("/etc/hermes"); d.mkdir(exist_ok=True); (d/"image-provenance.json").write_text(json.dumps({"schema":1,"deployment_kind":"image","manager":"docker","image":"gibranpulga/hermes-agent","revision":s["commit"],"version":s.get("baseVersion")}))' \
  && mkdir -p /var/lib/hermes/.hermes/installs/bcb380a4495ec6cc/environments/f878407c2d4f434794c12650f8fc54c4 /var/lib/hermes/projects \
  && ln -s /opt/hermes/.venv /var/lib/hermes/.hermes/installs/bcb380a4495ec6cc/environments/f878407c2d4f434794c12650f8fc54c4/venv \

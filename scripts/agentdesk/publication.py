@@ -146,7 +146,11 @@ def pull_image():
         raise RuntimeError('Pulled image differs from built candidate')
 
 
-def release_version(revision, sequence):
+def release_version(revision, sequence, frozen=None):
+    if frozen is not None:
+        if frozen.startswith('0.0.0+fork.') or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\+fork\.' + re.escape(str(sequence)), frozen):
+            raise RuntimeError('Frozen release version does not match the validated build sequence')
+        return frozen
     info = get_version_info()
     if info.commit != revision or info.base_version in ('unknown', '0.0.0'):
         raise RuntimeError('Canonical release version or source identity is unavailable')
@@ -169,7 +173,7 @@ def record():
     native['minimumGlibc'] = platform.libc_ver()[1]
     value = {'schema': 1, 'repository': REPOSITORY,
              'workflow': REPOSITORY + '/.github/workflows/agentdesk-release.yml',
-             'revision': revision, 'version': release_version(revision, os.environ['GITHUB_RUN_NUMBER']),
+             'revision': revision, 'version': release_version(revision, os.environ['GITHUB_RUN_NUMBER'], os.environ.get('AGENTDESK_RELEASE_VERSION')),
              'sequence': int(os.environ['GITHUB_RUN_NUMBER']), 'runId': os.environ['GITHUB_RUN_ID'],
              'notes': output('git', 'log', '-1', '--format=%s%n%b'),
              'compatibility': {'protocol': 1, 'os': 'linux', 'arch': 'x64', 'stateSchema': 1},
@@ -213,4 +217,5 @@ def publish():
 
 if __name__ == '__main__':
     import sys
-    {'record': record, 'publish': publish, 'push-image': push_image, 'pull-image': pull_image}[sys.argv[1]]()
+    {'record': record, 'publish': publish, 'push-image': push_image, 'pull-image': pull_image,
+     'version': lambda: print(release_version(os.environ['GITHUB_SHA'], os.environ['GITHUB_RUN_NUMBER']))}[sys.argv[1]]()
