@@ -1,0 +1,68 @@
+name: Docker Hub credential preflight
+on:
+  push:
+    branches: [feat/dockerhub-registry-preflight]
+    paths: [.github/workflows/dockerhub-preflight.yml]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  verify:
+    if: github.repository == 'gibranpulga/hermes-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      HUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+      HUB_REPOSITORY: ${{ vars.HERMES_IMAGE_REPOSITORY }}
+      PUSH_TOKEN: ${{ secrets.DOCKERHUB_PUSH_TOKEN }}
+      PULL_TOKEN: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
+    steps:
+      # No checkout, candidate execution, image upload or Actions artifact storage.
+      - name: Verify private repository and separate registry permissions
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import sys
+          from urllib import request, parse
+          from urllib.error import HTTPError
+
+          def fetch(url, headers=None, body=None):
+              call = request.Request(url, headers=headers or {}, data=body)
+              with request.urlopen(call, timeout=30) as response:
+                  return json.load(response)
+
+          try:
+              username = os.environ['HUB_USERNAME']
+              repository = os.environ['HUB_REPOSITORY']
+              if username != 'gapgeneralapps1' or repository != 'docker.io/gapgeneralapps1/agentdesk-private':
+                  raise ValueError('Administrator repository configuration does not match')
+              name = repository.removeprefix('docker.io/')
+              access = fetch('https://hub.docker.com/v2/auth/token',
+                  {'Content-Type': 'application/json'}, json.dumps({
+                      'identifier': username, 'secret': os.environ['PUSH_TOKEN']}).encode())['access_token']
+              details = fetch('https://hub.docker.com/v2/namespaces/' + username + '/repositories/agentdesk-private',
+                  {'Authorization': 'Bearer ' + access})
+              if details.get('is_private') is not True:
+                  raise ValueError('Repository privacy was not confirmed')
+              for key, expected in [('PUSH_TOKEN', {'pull', 'push'}), ('PULL_TOKEN', {'pull'})]:
+                  basic = base64.b64encode((username + ':' + os.environ[key]).encode()).decode()
+                  query = parse.urlencode({'service': 'registry.docker.io', 'scope': 'repository:' + name + ':pull,push,delete'})
+                  token = fetch('https://auth.docker.io/token?' + query, {'Authorization': 'Basic ' + basic})['token']
+                  # Decode only the TLS-authenticated registry response; this is
+                  # a permissions probe, never an installation trust decision.
+                  payload = token.split('.')[1]
+                  claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+                  entries = [entry for entry in claims.get('access', []) if entry.get('name') == name and entry.get('type') == 'repository']
+                  actions = set(entries[0]['actions']) if len(entries) == 1 else set()
+                  if actions != expected:
+                      raise ValueError(key + ' has unexpected repository permissions')
+                  print(key + ': expected permissions verified')
+              print('PASS: private repository, read/write without delete, and separate read-only credentials')
+          except HTTPError as exc:
+              print('Docker Hub preflight failed: HTTP ' + str(exc.code), file=sys.stderr)
+              sys.exit(1)
+          except Exception as exc:
+              print('Docker Hub preflight failed: ' + type(exc).__name__, file=sys.stderr)
+              sys.exit(1)
+          PY
