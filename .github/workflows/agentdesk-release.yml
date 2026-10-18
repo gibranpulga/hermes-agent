@@ -7,15 +7,16 @@ permissions: {}
 concurrency:
   group: agentdesk-release
   cancel-in-progress: false
+env:
+  PYTHONPATH: .
+  HERMES_IMAGE_REPOSITORY: ${{ vars.HERMES_IMAGE_REPOSITORY }}
 jobs:
-  release:
+  build:
     if: github.repository == 'gibranpulga/hermes-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -64,11 +65,6 @@ jobs:
           docker save hermes-release:candidate | gzip -1 > "$AGENTDESK_RELEASE_DIR/hermes-image.tar.gz"
           docker image rm hermes-release:candidate
           gzip -dc "$AGENTDESK_RELEASE_DIR/hermes-image.tar.gz" | docker load
-      - name: Validate exact exported installation, restart, health and recovery
-        env:
-          CANDIDATE: ${{ github.sha }}
-        run: |
-          python3 scripts/agentdesk/lifecycle.py "$(cat "$AGENTDESK_RELEASE_DIR/image-id")" "$CANDIDATE" "$AGENTDESK_RELEASE_DIR/lifecycle.json"
       - name: Build and validate the offline native payload using PM bundling
         env:
           CANDIDATE: ${{ github.sha }}
@@ -91,7 +87,118 @@ jobs:
           python3 scripts/agentdesk/native_lifecycle.py "$AGENTDESK_RELEASE_DIR/hermes-native.tar.gz" "$CANDIDATE" "$AGENTDESK_RELEASE_DIR/native-lifecycle.json"
           rm -rf "$RUNNER_TEMP/native-work" "$RUNNER_TEMP/native-cache" "$RUNNER_TEMP/native-payload" "$RUNNER_TEMP/web-dist"
           docker system prune -af
-          python3 scripts/agentdesk/publication.py record
+      # One short-lived cross-job transfer; images are never release assets.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-image
+          path: ${{ env.AGENTDESK_RELEASE_DIR }}/hermes-image.tar.gz
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-candidate
+          path: |
+            ${{ env.AGENTDESK_RELEASE_DIR }}/hermes-native.tar.gz
+            ${{ env.AGENTDESK_RELEASE_DIR }}/native-lifecycle.json
+            ${{ env.AGENTDESK_RELEASE_DIR }}/regression.json
+          compression-level: 0
+          retention-days: 1
+  upload-image:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      AGENTDESK_RELEASE_DIR: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-image
+          path: ${{ env.AGENTDESK_RELEASE_DIR }}
+      - name: Authenticate publisher without executing candidate code
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_PUSH_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+      - name: Upload candidate; this does not authorize installation
+        run: python3 scripts/agentdesk/publication.py push-image
+      - name: Remove publisher authentication
+        if: always()
+        run: docker logout docker.io
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: registry-candidate
+          path: ${{ env.AGENTDESK_RELEASE_DIR }}/image.json
+          retention-days: 1
+  validate-image:
+    needs: upload-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      AGENTDESK_RELEASE_DIR: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: registry-candidate
+          path: ${{ env.AGENTDESK_RELEASE_DIR }}
+      - name: Authenticate read-only validator
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+      - name: Pull and verify exact registry digest on a clean daemon
+        run: python3 scripts/agentdesk/publication.py pull-image
+      - name: Remove registry authentication before executing candidate
+        if: always()
+        run: docker logout docker.io
+      - name: Exercise exact pulled installation, restart, health and recovery
+        run: |
+          image=$(python3 -c 'import json,os; print(json.load(open(os.environ["AGENTDESK_RELEASE_DIR"]+"/image.json"))["imageId"])')
+          python3 scripts/agentdesk/lifecycle.py "$image" "$GITHUB_SHA" "$AGENTDESK_RELEASE_DIR/lifecycle.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: registry-validation
+          path: |
+            ${{ env.AGENTDESK_RELEASE_DIR }}/image.json
+            ${{ env.AGENTDESK_RELEASE_DIR }}/lifecycle.json
+          retention-days: 1
+  release:
+    needs: [build, validate-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      AGENTDESK_RELEASE_DIR: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: native-candidate
+          path: ${{ env.AGENTDESK_RELEASE_DIR }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: registry-validation
+          path: ${{ env.AGENTDESK_RELEASE_DIR }}
+      - name: Bind required validation to the immutable release record
+        run: python3 scripts/agentdesk/publication.py record
       - name: Attest validated release record
         if: github.ref == 'refs/heads/main'
         id: attestation

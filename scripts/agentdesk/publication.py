@@ -65,6 +65,8 @@ def archive_record(path):
 def artifact_assets(record):
     names = []
     for artifact in record['deployments'].values():
+        if artifact.get('transport') == 'registry':
+            continue
         names.extend(part['filename'] for part in artifact['parts']) if artifact.get('parts') else names.append(artifact['filename'])
     return [str(RELEASE_DIR / name) for name in names]
 
@@ -103,6 +105,47 @@ def archive_image_id(path, revision):
     raise RuntimeError('Image configuration is missing from the tested archive')
 
 
+def registry_record(repository, digest, image_id):
+    allowed = os.environ.get('HERMES_IMAGE_REPOSITORY', '')
+    if (not re.fullmatch(r'docker\.io/[a-z0-9_-]+/[a-z0-9_-]+', allowed) or repository != allowed or
+            not re.fullmatch('sha256:[a-f0-9]{64}', digest) or
+            not re.fullmatch('sha256:[a-f0-9]{64}', image_id)):
+        raise RuntimeError('Registry identity is invalid')
+    return {'transport': 'registry', 'repository': repository, 'digest': digest,
+            'sha256': digest.removeprefix('sha256:'), 'imageId': image_id, 'platform': 'linux/amd64'}
+
+
+def push_image():
+    """Runs on a fresh publisher daemon; never executes candidate code."""
+    archive = RELEASE_DIR / 'hermes-image.tar.gz'
+    config_id = archive_image_id(archive, os.environ['GITHUB_SHA'])
+    repository = os.environ['HERMES_IMAGE_REPOSITORY']
+    registry_record(repository, 'sha256:' + '0' * 64, config_id)
+    output('docker', 'load', '--input', str(archive), timeout=900)
+    tag = repository + ':candidate-' + os.environ['GITHUB_SHA'] + '-' + os.environ['GITHUB_RUN_ID']
+    output('docker', 'tag', 'hermes-release:candidate', tag)
+    output('docker', 'push', tag, timeout=900)
+    item = json.loads(output('docker', 'image', 'inspect', tag))[0]
+    refs = [ref for ref in item.get('RepoDigests', []) if ref.removeprefix('docker.io/').startswith(repository.removeprefix('docker.io/') + '@')]
+    if len(refs) != 1:
+        raise RuntimeError('Published manifest digest is ambiguous')
+    value = registry_record(repository, refs[0].split('@')[1], config_id)
+    (RELEASE_DIR / 'image.json').write_text(json.dumps(value, sort_keys=True) + '\n', encoding='utf-8')
+
+
+def pull_image():
+    image = json.loads((RELEASE_DIR / 'image.json').read_text(encoding='utf-8-sig'))
+    if image != registry_record(image['repository'], image['digest'], image['imageId']):
+        raise RuntimeError('Registry record changed')
+    reference = image['repository'] + '@' + image['digest']
+    output('docker', 'pull', '--platform', 'linux/amd64', reference, timeout=900)
+    item = json.loads(output('docker', 'image', 'inspect', reference))[0]
+    if (item['Id'] != image['imageId'] or item['Os'] != 'linux' or item['Architecture'] != 'amd64' or
+            reference.removeprefix('docker.io/') not in [ref.removeprefix('docker.io/') for ref in item.get('RepoDigests', [])] or
+            (item['Config'].get('Labels') or {}).get('org.opencontainers.image.revision') != os.environ['GITHUB_SHA']):
+        raise RuntimeError('Pulled image differs from built candidate')
+
+
 def release_version(revision, sequence):
     info = get_version_info()
     if info.commit != revision or info.base_version in ('unknown', '0.0.0'):
@@ -119,9 +162,9 @@ def record():
         json.loads((RELEASE_DIR / 'native-lifecycle.json').read_text(encoding='utf-8-sig')),
         json.loads((RELEASE_DIR / 'regression.json').read_text(encoding='utf-8-sig')),
     )
-    config_id = archive_image_id(RELEASE_DIR / 'hermes-image.tar.gz', revision)
-    image = archive_record(RELEASE_DIR / 'hermes-image.tar.gz')
-    image['imageId'] = config_id
+    image = json.loads((RELEASE_DIR / 'image.json').read_text(encoding='utf-8-sig'))
+    if image != registry_record(image['repository'], image['digest'], image['imageId']):
+        raise RuntimeError('Registry record changed')
     native = archive_record(RELEASE_DIR / 'hermes-native.tar.gz')
     native['minimumGlibc'] = platform.libc_ver()[1]
     value = {'schema': 1, 'repository': REPOSITORY,
@@ -170,4 +213,4 @@ def publish():
 
 if __name__ == '__main__':
     import sys
-    {'record': record, 'publish': publish}[sys.argv[1]]()
+    {'record': record, 'publish': publish, 'push-image': push_image, 'pull-image': pull_image}[sys.argv[1]]()

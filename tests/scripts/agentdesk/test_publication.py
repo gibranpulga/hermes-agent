@@ -110,3 +110,47 @@ def test_release_label_uses_canonical_version_and_rejects_placeholder_or_stale_i
         monkeypatch.setattr(publication, 'get_version_info', lambda: SimpleNamespace(commit=commit, base_version=base))
         with pytest.raises(RuntimeError, match='version or source identity'):
             publication.release_version(revision, 10)
+
+
+def test_registry_records_bind_manifest_and_config_to_allowed_repository(monkeypatch):
+    from scripts.agentdesk import publication
+
+    allowed = 'docker.io/test-owner/hermes-agent'
+    monkeypatch.setenv('HERMES_IMAGE_REPOSITORY', allowed)
+    value = publication.registry_record(allowed, 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64)
+    assert value['sha256'] == 'a' * 64
+    assert value['platform'] == 'linux/amd64'
+    for repository, digest in [('docker.io/attacker/image', value['digest']), (allowed, 'latest')]:
+        with pytest.raises(RuntimeError, match='identity'):
+            publication.registry_record(repository, digest, value['imageId'])
+    monkeypatch.delenv('HERMES_IMAGE_REPOSITORY')
+    with pytest.raises(RuntimeError, match='identity'):
+        publication.registry_record(allowed, value['digest'], value['imageId'])
+
+
+def test_registry_images_are_not_uploaded_as_redundant_release_archives():
+    from scripts.agentdesk import publication
+
+    record = {'deployments': {'image': {'transport': 'registry'},
+                              'native': {'filename': 'hermes-native.tar.gz'}}}
+    assert publication.artifact_assets(record) == [str(publication.RELEASE_DIR / 'hermes-native.tar.gz')]
+
+
+def test_validator_pulls_the_published_digest_and_rejects_changed_config(tmp_path, monkeypatch):
+    import json
+    from scripts.agentdesk import publication
+
+    allowed = 'docker.io/test-owner/hermes-agent'
+    monkeypatch.setenv('HERMES_IMAGE_REPOSITORY', allowed)
+    monkeypatch.setenv('GITHUB_SHA', 'c' * 40)
+    monkeypatch.setattr(publication, 'RELEASE_DIR', tmp_path)
+    value = publication.registry_record(allowed, 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64)
+    (tmp_path / 'image.json').write_text(json.dumps(value))
+    commands = []
+    def output(*arguments, **kwargs):
+        commands.append(arguments)
+        return json.dumps([{'Id': 'sha256:' + 'f' * 64}]) if 'inspect' in arguments else ''
+    monkeypatch.setattr(publication, 'output', output)
+    with pytest.raises(RuntimeError, match='differs'):
+        publication.pull_image()
+    assert commands[0] == ('docker', 'pull', '--platform', 'linux/amd64', allowed + '@' + value['digest'])
